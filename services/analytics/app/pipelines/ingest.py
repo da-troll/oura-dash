@@ -130,7 +130,7 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
         while current <= end_date:
             # Fetch raw data for this day
             async with conn.cursor() as cur:
-                # Get daily_sleep data
+                # Get daily_sleep data (for score)
                 await cur.execute(
                     """
                     SELECT payload FROM oura_raw
@@ -140,7 +140,19 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
                     {"day": str(current)},
                 )
                 sleep_row = await cur.fetchone()
-                sleep_data = sleep_row["payload"] if sleep_row else {}
+                daily_sleep_data = sleep_row["payload"] if sleep_row else {}
+
+                # Get sleep session data (for actual durations and HRV)
+                await cur.execute(
+                    """
+                    SELECT payload FROM oura_raw
+                    WHERE source = 'sleep' AND day = %(day)s
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    {"day": str(current)},
+                )
+                sleep_session_row = await cur.fetchone()
+                sleep_session_data = sleep_session_row["payload"] if sleep_session_row else {}
 
                 # Get daily_readiness data
                 await cur.execute(
@@ -181,15 +193,19 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
             else:
                 season = "winter"
 
-            # Sleep metrics
-            contributors = sleep_data.get("contributors", {})
-            sleep_total = contributors.get("total_sleep")
-            sleep_efficiency = contributors.get("efficiency")
-            sleep_rem = contributors.get("rem_sleep")
-            sleep_deep = contributors.get("deep_sleep")
-            sleep_latency = contributors.get("latency")
-            sleep_restfulness = contributors.get("restfulness")
-            sleep_score = sleep_data.get("score")
+            # Sleep metrics from sleep session (actual durations in seconds)
+            sleep_total = sleep_session_data.get("total_sleep_duration")
+            sleep_efficiency = sleep_session_data.get("efficiency")
+            sleep_rem = sleep_session_data.get("rem_sleep_duration")
+            sleep_deep = sleep_session_data.get("deep_sleep_duration")
+            sleep_latency = sleep_session_data.get("latency")
+            sleep_restfulness = sleep_session_data.get("restless_periods")
+            sleep_score = daily_sleep_data.get("score")
+
+            # HRV from sleep session
+            hrv_average = sleep_session_data.get("average_hrv")
+            hr_lowest = sleep_session_data.get("lowest_heart_rate")
+            hr_average = sleep_session_data.get("average_heart_rate")
 
             # Readiness metrics
             readiness_score = readiness_data.get("score")
@@ -212,7 +228,7 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
             sedentary = activity_data.get("sedentary_met_minutes")
 
             # Only insert if we have some data
-            if sleep_data or readiness_data or activity_data:
+            if daily_sleep_data or sleep_session_data or readiness_data or activity_data:
                 await conn.execute(
                     """
                     INSERT INTO oura_daily (
@@ -222,7 +238,8 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
                         readiness_score, readiness_temperature_deviation, readiness_resting_heart_rate,
                         readiness_hrv_balance, readiness_recovery_index, readiness_activity_balance,
                         activity_score, steps, cal_total, cal_active, met_minutes,
-                        low_activity_minutes, medium_activity_minutes, high_activity_minutes, sedentary_minutes
+                        low_activity_minutes, medium_activity_minutes, high_activity_minutes, sedentary_minutes,
+                        hr_lowest, hr_average, hrv_average
                     )
                     VALUES (
                         %(date)s, %(weekday)s, %(is_weekend)s, %(season)s, %(is_holiday)s,
@@ -231,7 +248,8 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
                         %(readiness_score)s, %(readiness_temperature_deviation)s, %(readiness_resting_heart_rate)s,
                         %(readiness_hrv_balance)s, %(readiness_recovery_index)s, %(readiness_activity_balance)s,
                         %(activity_score)s, %(steps)s, %(cal_total)s, %(cal_active)s, %(met_minutes)s,
-                        %(low_activity_minutes)s, %(medium_activity_minutes)s, %(high_activity_minutes)s, %(sedentary_minutes)s
+                        %(low_activity_minutes)s, %(medium_activity_minutes)s, %(high_activity_minutes)s, %(sedentary_minutes)s,
+                        %(hr_lowest)s, %(hr_average)s, %(hrv_average)s
                     )
                     ON CONFLICT (date) DO UPDATE SET
                         weekday = EXCLUDED.weekday,
@@ -259,6 +277,9 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
                         medium_activity_minutes = COALESCE(EXCLUDED.medium_activity_minutes, oura_daily.medium_activity_minutes),
                         high_activity_minutes = COALESCE(EXCLUDED.high_activity_minutes, oura_daily.high_activity_minutes),
                         sedentary_minutes = COALESCE(EXCLUDED.sedentary_minutes, oura_daily.sedentary_minutes),
+                        hr_lowest = COALESCE(EXCLUDED.hr_lowest, oura_daily.hr_lowest),
+                        hr_average = COALESCE(EXCLUDED.hr_average, oura_daily.hr_average),
+                        hrv_average = COALESCE(EXCLUDED.hrv_average, oura_daily.hrv_average),
                         updated_at = NOW()
                     """,
                     {
@@ -289,6 +310,9 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
                         "medium_activity_minutes": medium_activity,
                         "high_activity_minutes": high_activity,
                         "sedentary_minutes": sedentary,
+                        "hr_lowest": hr_lowest,
+                        "hr_average": hr_average,
+                        "hrv_average": hrv_average,
                     },
                 )
                 days_processed += 1

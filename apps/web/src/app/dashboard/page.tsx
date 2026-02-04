@@ -213,103 +213,87 @@ export default function DashboardPage() {
 
       {!loading && !error && hasData && (
         <>
-          {/* Summary Cards - 2 rows of 4 */}
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 mb-8">
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Readiness</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">
-                  {formatValue(data?.summary.readiness_avg)}
+          {/* Summary Cards - compact horizontal layout */}
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4 mb-6">
+            <Card className="py-3">
+              <CardContent className="flex items-center justify-between p-0 px-4">
+                <span className="text-sm font-medium">Readiness</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">{formatValue(data?.summary.readiness_avg)}</div>
+                  <p className="text-xs text-muted-foreground">7-day avg</p>
                 </div>
-                <p className="text-xs text-muted-foreground">7-day average</p>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Sleep Score</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">
-                  {formatValue(data?.summary.sleep_score_avg)}
+            <Card className="py-3">
+              <CardContent className="flex items-center justify-between p-0 px-4">
+                <span className="text-sm font-medium">Sleep Score</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">{formatValue(data?.summary.sleep_score_avg)}</div>
+                  <p className="text-xs text-muted-foreground">7-day avg</p>
                 </div>
-                <p className="text-xs text-muted-foreground">7-day average</p>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Activity</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">
-                  {formatValue(data?.summary.activity_avg)}
+            <Card className="py-3">
+              <CardContent className="flex items-center justify-between p-0 px-4">
+                <span className="text-sm font-medium">Activity</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">{formatValue(data?.summary.activity_avg)}</div>
+                  <p className="text-xs text-muted-foreground">7-day avg</p>
                 </div>
-                <p className="text-xs text-muted-foreground">7-day average</p>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Daily Steps</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">
-                  {formatValue(data?.summary.steps_avg)}
+            <Card className="py-3">
+              <CardContent className="flex items-center justify-between p-0 px-4">
+                <span className="text-sm font-medium">Steps</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">{formatValue(data?.summary.steps_avg)}</div>
+                  <p className="text-xs text-muted-foreground">7-day avg</p>
                 </div>
-                <p className="text-xs text-muted-foreground">7-day average</p>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">HRV</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">
-                  {formatValue(data?.summary.hrv_avg, " ms")}
+            <Card className="py-3">
+              <CardContent className="flex items-center justify-between p-0 px-4">
+                <span className="text-sm font-medium">HRV</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">{formatValue(data?.summary.hrv_avg, " ms")}</div>
+                  <p className="text-xs text-muted-foreground">7-day avg</p>
                 </div>
-                <p className="text-xs text-muted-foreground">7-day average</p>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Resting HR</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">
-                  {formatValue(data?.summary.rhr_avg, " bpm")}
+            <Card className="py-3">
+              <CardContent className="flex items-center justify-between p-0 px-4">
+                <span className="text-sm font-medium">Resting HR</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">{formatValue(data?.summary.rhr_avg, " bpm")}</div>
+                  <p className="text-xs text-muted-foreground">7-day avg</p>
                 </div>
-                <p className="text-xs text-muted-foreground">7-day average</p>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Sleep Duration</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">
-                  {data?.summary.sleep_hours_avg
-                    ? `${data.summary.sleep_hours_avg.toFixed(1)}h`
-                    : "--"}
+            <Card className="py-3">
+              <CardContent className="flex items-center justify-between p-0 px-4">
+                <span className="text-sm font-medium">Sleep</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">
+                    {data?.summary.sleep_hours_avg ? `${data.summary.sleep_hours_avg.toFixed(1)}h` : "--"}
+                  </div>
+                  <p className="text-xs text-muted-foreground">7-day avg</p>
                 </div>
-                <p className="text-xs text-muted-foreground">7-day average</p>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Calories</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">
-                  {formatValue(data?.summary.calories_avg)}
+            <Card className="py-3">
+              <CardContent className="flex items-center justify-between p-0 px-4">
+                <span className="text-sm font-medium">Calories</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">{formatValue(data?.summary.calories_avg)}</div>
+                  <p className="text-xs text-muted-foreground">7-day avg</p>
                 </div>
-                <p className="text-xs text-muted-foreground">7-day average</p>
               </CardContent>
             </Card>
           </div>
