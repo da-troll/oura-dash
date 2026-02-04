@@ -549,20 +549,18 @@ async def get_chronotype():
             """)
             daily_rows = await cur.fetchall()
 
-            # For now, estimate midpoint from total sleep
-            # In a real implementation, we'd use bedtime_start from raw data
-            # Let's query raw sleep data for more accurate bedtimes
+            # Query raw sleep data for bedtime_start and bedtime_end
             await cur.execute("""
                 SELECT
-                    r.date,
-                    r.payload->'sleep'->0->>'bedtime_start' as bedtime_start,
-                    r.payload->'sleep'->0->>'bedtime_end' as bedtime_end,
+                    r.day as date,
+                    r.payload->>'bedtime_start' as bedtime_start,
+                    r.payload->>'bedtime_end' as bedtime_end,
                     d.is_weekend
                 FROM oura_raw r
-                JOIN oura_daily d ON r.date = d.date
-                WHERE r.payload->'sleep' IS NOT NULL
-                AND jsonb_array_length(r.payload->'sleep') > 0
-                ORDER BY r.date DESC
+                JOIN oura_daily d ON r.day = d.date
+                WHERE r.source = 'sleep'
+                AND r.payload->>'type' = 'long_sleep'
+                ORDER BY r.day DESC
                 LIMIT 90
             """)
             raw_rows = await cur.fetchall()
