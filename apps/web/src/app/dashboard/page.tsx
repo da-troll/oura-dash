@@ -13,6 +13,7 @@ import {
   ReferenceLine,
 } from "recharts";
 
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -84,9 +85,12 @@ export default function DashboardPage() {
     <div className="container mx-auto py-8">
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-3xl font-bold">Dashboard</h1>
-        <Link href="/settings">
-          <Button variant="outline">Settings</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <Link href="/settings">
+            <Button variant="outline">Settings</Button>
+          </Link>
+        </div>
       </div>
 
       {loading && (

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -146,7 +147,15 @@ export default function SettingsPage() {
 
   return (
     <div className="container mx-auto py-8 max-w-2xl">
-      <h1 className="text-3xl font-bold mb-8">Settings</h1>
+      <div className="flex justify-between items-center mb-8">
+        <h1 className="text-3xl font-bold">Settings</h1>
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <Link href="/dashboard">
+            <Button variant="outline">Dashboard</Button>
+          </Link>
+        </div>
+      </div>
 
       {error && (
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
