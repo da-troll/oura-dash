@@ -196,7 +196,7 @@ export default function InsightsPage() {
         <div className="flex items-center gap-2">
           <ThemeToggle />
           <Select value="insights" onValueChange={(value) => router.push(`/${value}`)}>
-            <SelectTrigger className="w-[180px]">
+            <SelectTrigger className="w-[145px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
