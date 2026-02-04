@@ -193,7 +193,7 @@ export default function PatternsPage() {
         <div className="flex items-center gap-2">
           <ThemeToggle />
           <Select value="patterns" onValueChange={(value) => router.push(`/${value}`)}>
-            <SelectTrigger className="w-[145px]">
+            <SelectTrigger className="w-[135px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
