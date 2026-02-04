@@ -191,7 +191,6 @@ export default function PatternsPage() {
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-3xl font-bold">Patterns</h1>
         <div className="flex items-center gap-2">
-          <ThemeToggle />
           <Select value="patterns" onValueChange={(value) => router.push(`/${value}`)}>
             <SelectTrigger className="w-[135px]">
               <SelectValue />
@@ -203,6 +202,7 @@ export default function PatternsPage() {
               <SelectItem value="insights">Insights</SelectItem>
             </SelectContent>
           </Select>
+          <ThemeToggle />
           <Link href="/settings">
             <Button variant="outline" size="icon">
               <Settings className="h-4 w-4" />

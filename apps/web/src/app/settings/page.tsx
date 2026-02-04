@@ -159,7 +159,6 @@ function SettingsContent() {
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-3xl font-bold">Settings</h1>
         <div className="flex items-center gap-2">
-          <ThemeToggle />
           <Select value="settings" onValueChange={(value) => router.push(`/${value}`)}>
             <SelectTrigger className="w-[135px]">
               <SelectValue />
@@ -171,6 +170,7 @@ function SettingsContent() {
               <SelectItem value="insights">Insights</SelectItem>
             </SelectContent>
           </Select>
+          <ThemeToggle />
           <Button variant="outline" size="icon" disabled>
             <SettingsIcon className="h-4 w-4" />
           </Button>
