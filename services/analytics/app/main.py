@@ -88,7 +88,7 @@ async def get_dashboard() -> DashboardResponse:
                     AVG(activity_score) as activity_avg,
                     AVG(steps) as steps_avg,
                     AVG(hrv_average) as hrv_avg,
-                    AVG(readiness_resting_heart_rate) as rhr_avg,
+                    AVG(hr_lowest) as rhr_avg,
                     AVG(sleep_total_seconds / 3600.0) as sleep_hours_avg,
                     AVG(cal_total) as calories_avg,
                     COUNT(*) as days_with_data
@@ -110,7 +110,7 @@ async def get_dashboard() -> DashboardResponse:
                     activity_score,
                     steps,
                     hrv_average,
-                    readiness_resting_heart_rate as rhr,
+                    hr_lowest as rhr,
                     sleep_total_seconds / 3600.0 as sleep_hours
                 FROM oura_daily
                 WHERE date >= CURRENT_DATE - INTERVAL '60 days'
