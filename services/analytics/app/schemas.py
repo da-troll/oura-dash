@@ -269,9 +269,13 @@ class DashboardSummary(BaseModel):
     """Summary metrics for dashboard."""
 
     readiness_avg: float | None = None
-    sleep_avg: float | None = None
+    sleep_score_avg: float | None = None
     activity_avg: float | None = None
     steps_avg: float | None = None
+    hrv_avg: float | None = None
+    rhr_avg: float | None = None
+    sleep_hours_avg: float | None = None
+    calories_avg: float | None = None
     days_with_data: int = 0
 
 
@@ -283,12 +287,19 @@ class TrendPoint(BaseModel):
     baseline: float | None = None
 
 
+class TrendSeries(BaseModel):
+    """A named trend series."""
+
+    name: str
+    data: list[TrendPoint]
+
+
 class DashboardResponse(BaseModel):
     """Dashboard data response."""
 
     connected: bool
     summary: DashboardSummary
-    readiness_trend: list[TrendPoint] = []
+    trends: list[TrendSeries] = []
 
 
 # ============================================

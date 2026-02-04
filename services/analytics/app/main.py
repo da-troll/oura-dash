@@ -25,6 +25,7 @@ from app.schemas import (
     SpearmanResponse,
     SyncResponse,
     TrendPoint,
+    TrendSeries,
     WeeklyClusterResponse,
 )
 
@@ -74,18 +75,22 @@ async def get_dashboard() -> DashboardResponse:
         return DashboardResponse(
             connected=False,
             summary=DashboardSummary(),
-            readiness_trend=[],
+            trends=[],
         )
 
     async with get_db() as conn:
         async with conn.cursor() as cur:
-            # Get 7-day averages
+            # Get 7-day averages for all key metrics
             await cur.execute("""
                 SELECT
                     AVG(readiness_score) as readiness_avg,
-                    AVG(sleep_score) as sleep_avg,
+                    AVG(sleep_score) as sleep_score_avg,
                     AVG(activity_score) as activity_avg,
                     AVG(steps) as steps_avg,
+                    AVG(hrv_average) as hrv_avg,
+                    AVG(readiness_resting_heart_rate) as rhr_avg,
+                    AVG(sleep_total_seconds / 3600.0) as sleep_hours_avg,
+                    AVG(cal_total) as calories_avg,
                     COUNT(*) as days_with_data
                 FROM oura_daily
                 WHERE date >= CURRENT_DATE - INTERVAL '7 days'
@@ -96,47 +101,59 @@ async def get_dashboard() -> DashboardResponse:
             """)
             summary_row = await cur.fetchone()
 
-            # Get 28-day readiness trend with rolling baseline
+            # Get all trend data for the past 60 days
             await cur.execute("""
-                WITH daily_data AS (
-                    SELECT
-                        date,
-                        readiness_score as value,
-                        AVG(readiness_score) OVER (
-                            ORDER BY date
-                            ROWS BETWEEN 27 PRECEDING AND CURRENT ROW
-                        ) as baseline
-                    FROM oura_daily
-                    WHERE date >= CURRENT_DATE - INTERVAL '28 days'
-                    ORDER BY date
-                )
-                SELECT date, value, baseline
-                FROM daily_data
+                SELECT
+                    date,
+                    readiness_score,
+                    sleep_score,
+                    activity_score,
+                    steps,
+                    hrv_average,
+                    readiness_resting_heart_rate as rhr,
+                    sleep_total_seconds / 3600.0 as sleep_hours
+                FROM oura_daily
+                WHERE date >= CURRENT_DATE - INTERVAL '60 days'
                 ORDER BY date
             """)
             trend_rows = await cur.fetchall()
 
     summary = DashboardSummary(
         readiness_avg=round(summary_row["readiness_avg"], 1) if summary_row["readiness_avg"] else None,
-        sleep_avg=round(summary_row["sleep_avg"], 1) if summary_row["sleep_avg"] else None,
+        sleep_score_avg=round(summary_row["sleep_score_avg"], 1) if summary_row["sleep_score_avg"] else None,
         activity_avg=round(summary_row["activity_avg"], 1) if summary_row["activity_avg"] else None,
         steps_avg=round(summary_row["steps_avg"]) if summary_row["steps_avg"] else None,
+        hrv_avg=round(summary_row["hrv_avg"], 1) if summary_row["hrv_avg"] else None,
+        rhr_avg=round(summary_row["rhr_avg"], 1) if summary_row["rhr_avg"] else None,
+        sleep_hours_avg=round(summary_row["sleep_hours_avg"], 1) if summary_row["sleep_hours_avg"] else None,
+        calories_avg=round(summary_row["calories_avg"]) if summary_row["calories_avg"] else None,
         days_with_data=summary_row["days_with_data"] or 0,
     )
 
-    readiness_trend = [
-        TrendPoint(
-            date=str(row["date"]),
-            value=row["value"],
-            baseline=round(row["baseline"], 1) if row["baseline"] else None,
-        )
-        for row in trend_rows
+    # Build trend series for each metric
+    def build_trend(metric_key: str) -> list[TrendPoint]:
+        return [
+            TrendPoint(
+                date=str(row["date"]),
+                value=float(row[metric_key]) if row[metric_key] is not None else None,
+            )
+            for row in trend_rows
+        ]
+
+    trends = [
+        TrendSeries(name="readiness", data=build_trend("readiness_score")),
+        TrendSeries(name="sleep", data=build_trend("sleep_score")),
+        TrendSeries(name="activity", data=build_trend("activity_score")),
+        TrendSeries(name="steps", data=build_trend("steps")),
+        TrendSeries(name="hrv", data=build_trend("hrv_average")),
+        TrendSeries(name="rhr", data=build_trend("rhr")),
+        TrendSeries(name="sleep_hours", data=build_trend("sleep_hours")),
     ]
 
     return DashboardResponse(
         connected=True,
         summary=summary,
-        readiness_trend=readiness_trend,
+        trends=trends,
     )
 
 
