@@ -171,7 +171,7 @@ export default function DashboardPage() {
             strokeWidth={2}
             dot={{ fill: color, r: 2 }}
             name={title}
-            connectNulls={false}
+            connectNulls={true}
           />
         </LineChart>
       </ResponsiveContainer>
