@@ -9,6 +9,11 @@ __pycache__/
 .venv/
 venv/
 .uv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.python-version
 
 # Environment files
 .env
@@ -20,12 +25,14 @@ venv/
 out/
 dist/
 build/
+*.tsbuildinfo
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+.vercel/
 
 # OS
 .DS_Store
