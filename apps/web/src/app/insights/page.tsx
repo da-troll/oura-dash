@@ -26,6 +26,15 @@ import {
 } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Settings } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 const AVAILABLE_METRICS = [
   { value: "readiness_score", label: "Readiness Score" },
@@ -72,6 +81,7 @@ interface ChronotypeData {
 }
 
 export default function InsightsPage() {
+  const router = useRouter();
   // Heatmap state
   const [heatmapMetric, setHeatmapMetric] = useState("readiness_score");
   const [heatmapData, setHeatmapData] = useState<HeatmapData | null>(null);
@@ -185,17 +195,21 @@ export default function InsightsPage() {
         <h1 className="text-3xl font-bold">Insights</h1>
         <div className="flex items-center gap-2">
           <ThemeToggle />
-          <Link href="/dashboard">
-            <Button variant="outline">Dashboard</Button>
-          </Link>
-          <Link href="/correlations">
-            <Button variant="outline">Correlations</Button>
-          </Link>
-          <Link href="/patterns">
-            <Button variant="outline">Patterns</Button>
-          </Link>
+          <Select value="insights" onValueChange={(value) => router.push(`/${value}`)}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="dashboard">Dashboard</SelectItem>
+              <SelectItem value="correlations">Correlations</SelectItem>
+              <SelectItem value="patterns">Patterns</SelectItem>
+              <SelectItem value="insights">Insights</SelectItem>
+            </SelectContent>
+          </Select>
           <Link href="/settings">
-            <Button variant="outline">Settings</Button>
+            <Button variant="outline" size="icon">
+              <Settings className="h-4 w-4" />
+            </Button>
           </Link>
         </div>
       </div>

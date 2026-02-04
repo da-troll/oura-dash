@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -15,6 +15,14 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Settings as SettingsIcon } from "lucide-react";
 
 interface AuthStatus {
   connected: boolean;
@@ -29,6 +37,7 @@ interface SyncResult {
 }
 
 function SettingsContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -151,9 +160,20 @@ function SettingsContent() {
         <h1 className="text-3xl font-bold">Settings</h1>
         <div className="flex items-center gap-2">
           <ThemeToggle />
-          <Link href="/dashboard">
-            <Button variant="outline">Dashboard</Button>
-          </Link>
+          <Select value="settings" onValueChange={(value) => router.push(`/${value}`)}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="dashboard">Dashboard</SelectItem>
+              <SelectItem value="correlations">Correlations</SelectItem>
+              <SelectItem value="patterns">Patterns</SelectItem>
+              <SelectItem value="insights">Insights</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="icon" disabled>
+            <SettingsIcon className="h-4 w-4" />
+          </Button>
         </div>
       </div>
 
@@ -255,26 +275,6 @@ function SettingsContent() {
         </Card>
       )}
 
-      <Separator className="my-6" />
-
-      {/* Navigation */}
-      <div className="space-y-2">
-        <h2 className="text-lg font-semibold mb-2">Quick Links</h2>
-        <div className="flex flex-wrap gap-2">
-          <Link href="/dashboard">
-            <Button variant="outline">Dashboard</Button>
-          </Link>
-          <Link href="/insights">
-            <Button variant="outline">Insights</Button>
-          </Link>
-          <Link href="/correlations">
-            <Button variant="outline">Correlations</Button>
-          </Link>
-          <Link href="/patterns">
-            <Button variant="outline">Patterns</Button>
-          </Link>
-        </div>
-      </div>
     </div>
   );
 }

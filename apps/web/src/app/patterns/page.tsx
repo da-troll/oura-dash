@@ -27,6 +27,15 @@ import {
 } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Settings } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 const AVAILABLE_METRICS = [
   { value: "readiness_score", label: "Readiness Score" },
@@ -69,6 +78,7 @@ interface WeeklyCluster {
 const CLUSTER_COLORS = ["#2563eb", "#16a34a", "#ea580c", "#8b5cf6", "#dc2626", "#0891b2"];
 
 export default function PatternsPage() {
+  const router = useRouter();
   // Change points state
   const [cpMetric, setCpMetric] = useState("readiness_score");
   const [cpPenalty, setCpPenalty] = useState(10);
@@ -182,17 +192,21 @@ export default function PatternsPage() {
         <h1 className="text-3xl font-bold">Patterns</h1>
         <div className="flex items-center gap-2">
           <ThemeToggle />
-          <Link href="/dashboard">
-            <Button variant="outline">Dashboard</Button>
-          </Link>
-          <Link href="/insights">
-            <Button variant="outline">Insights</Button>
-          </Link>
-          <Link href="/correlations">
-            <Button variant="outline">Correlations</Button>
-          </Link>
+          <Select value="patterns" onValueChange={(value) => router.push(`/${value}`)}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="dashboard">Dashboard</SelectItem>
+              <SelectItem value="correlations">Correlations</SelectItem>
+              <SelectItem value="patterns">Patterns</SelectItem>
+              <SelectItem value="insights">Insights</SelectItem>
+            </SelectContent>
+          </Select>
           <Link href="/settings">
-            <Button variant="outline">Settings</Button>
+            <Button variant="outline" size="icon">
+              <Settings className="h-4 w-4" />
+            </Button>
           </Link>
         </div>
       </div>
