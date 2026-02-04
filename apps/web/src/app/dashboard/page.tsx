@@ -97,7 +97,7 @@ export default function DashboardPage() {
     const series = data?.trends.find((t) => t.name === name);
     return (
       series?.data.map((point) => ({
-        date: point.date.slice(5), // MM-DD format
+        date: point.date.slice(8) + '/' + point.date.slice(5, 7), // DD/MM format
         value: point.value,
       })) || []
     );

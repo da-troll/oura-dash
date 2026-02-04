@@ -368,7 +368,7 @@ export default function InsightsPage() {
                         <XAxis
                           dataKey="date"
                           tick={{ fontSize: 10 }}
-                          tickFormatter={(v) => v.slice(5)}
+                          tickFormatter={(v) => v.slice(8) + '/' + v.slice(5, 7)}
                           interval="preserveStartEnd"
                         />
                         <YAxis domain={[0, 100]} unit="%" />
