@@ -55,12 +55,12 @@ interface DashboardData {
 
 const CHART_COLORS = {
   readiness: "#2563eb",
-  sleep: "#7c3aed",
+  sleep: "#ec4899",
   activity: "#16a34a",
   steps: "#ea580c",
   hrv: "#0891b2",
   rhr: "#dc2626",
-  sleep_hours: "#8b5cf6",
+  sleep_hours: "#f472b6",
 };
 
 export default function DashboardPage() {
