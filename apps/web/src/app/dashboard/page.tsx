@@ -184,6 +184,12 @@ export default function DashboardPage() {
         <h1 className="text-3xl font-bold">Dashboard</h1>
         <div className="flex items-center gap-2">
           <ThemeToggle />
+          <Link href="/correlations">
+            <Button variant="outline">Correlations</Button>
+          </Link>
+          <Link href="/patterns">
+            <Button variant="outline">Patterns</Button>
+          </Link>
           <Link href="/settings">
             <Button variant="outline">Settings</Button>
           </Link>
