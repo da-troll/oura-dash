@@ -391,18 +391,29 @@ export default function InsightsPage() {
                             if (active && payload && payload.length) {
                               const data = payload[0].payload;
                               return (
-                                <div className="bg-card border rounded p-2 text-sm">
-                                  <p className="font-medium">{label}</p>
-                                  <p>Total: {data.total_hours?.toFixed(1)} hrs</p>
-                                  <p style={{ color: "#4f46e5" }}>
-                                    Deep: {data.deep_pct?.toFixed(1)}%
-                                  </p>
-                                  <p style={{ color: "#9333ea" }}>
-                                    REM: {data.rem_pct?.toFixed(1)}%
-                                  </p>
-                                  <p style={{ color: "#60a5fa" }}>
-                                    Light: {data.light_pct?.toFixed(1)}%
-                                  </p>
+                                <div className="rounded-lg border bg-background p-3 shadow-lg">
+                                  <div className="grid gap-2">
+                                    <p className="text-sm font-medium text-muted-foreground">
+                                      {label}
+                                    </p>
+                                    <p className="text-sm font-bold">
+                                      Total: {data.total_hours?.toFixed(1)}h
+                                    </p>
+                                    <div className="space-y-1">
+                                      <div className="flex items-center gap-2">
+                                        <div className="h-2 w-2 rounded-full bg-[#4f46e5]" />
+                                        <span className="text-sm">Deep: {data.deep_pct?.toFixed(1)}%</span>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <div className="h-2 w-2 rounded-full bg-[#9333ea]" />
+                                        <span className="text-sm">REM: {data.rem_pct?.toFixed(1)}%</span>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <div className="h-2 w-2 rounded-full bg-[#60a5fa]" />
+                                        <span className="text-sm">Light: {data.light_pct?.toFixed(1)}%</span>
+                                      </div>
+                                    </div>
+                                  </div>
                                 </div>
                               );
                             }

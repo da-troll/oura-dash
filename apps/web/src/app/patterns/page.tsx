@@ -400,11 +400,32 @@ export default function PatternsPage() {
                                 if (active && payload && payload.length) {
                                   const data = payload[0].payload;
                                   return (
-                                    <div className="bg-card border rounded p-2 text-sm">
-                                      <p className="font-medium">{data.date}</p>
-                                      <p>Value: {data.value.toFixed(1)}</p>
-                                      <p>Z-score: {data.z_score.toFixed(2)}</p>
-                                      <p>Direction: {data.direction}</p>
+                                    <div className="rounded-lg border bg-background p-3 shadow-lg">
+                                      <div className="grid gap-2">
+                                        <p className="text-sm font-medium text-muted-foreground">
+                                          {data.date}
+                                        </p>
+                                        <div className="space-y-1">
+                                          <p className="text-sm">
+                                            <span className="font-medium">Value:</span> {data.value.toFixed(1)}
+                                          </p>
+                                          <p className="text-sm">
+                                            <span className="font-medium">Z-score:</span> {data.z_score.toFixed(2)}
+                                          </p>
+                                          <p className="text-sm">
+                                            <span className="font-medium">Direction:</span>{" "}
+                                            <span
+                                              className={
+                                                data.direction === "high"
+                                                  ? "text-green-600 dark:text-green-400"
+                                                  : "text-red-600 dark:text-red-400"
+                                              }
+                                            >
+                                              {data.direction}
+                                            </span>
+                                          </p>
+                                        </div>
+                                      </div>
                                     </div>
                                   );
                                 }

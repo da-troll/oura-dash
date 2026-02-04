@@ -312,11 +312,21 @@ export default function CorrelationsPage() {
                             if (active && payload && payload.length) {
                               const data = payload[0].payload;
                               return (
-                                <div className="bg-card border rounded p-2 text-sm">
-                                  <p className="font-medium">{data.metric}</p>
-                                  <p>ρ = {data.rho.toFixed(3)}</p>
-                                  <p>p = {formatPValue(data.p_value)}</p>
-                                  <p>n = {data.n}</p>
+                                <div className="rounded-lg border bg-background p-3 shadow-lg">
+                                  <div className="grid gap-2">
+                                    <p className="text-sm font-bold">{data.metric}</p>
+                                    <div className="space-y-1">
+                                      <p className="text-sm">
+                                        <span className="font-medium">ρ =</span> {data.rho.toFixed(3)}
+                                      </p>
+                                      <p className="text-sm">
+                                        <span className="font-medium">p =</span> {formatPValue(data.p_value)}
+                                      </p>
+                                      <p className="text-sm">
+                                        <span className="font-medium">n =</span> {data.n}
+                                      </p>
+                                    </div>
+                                  </div>
                                 </div>
                               );
                             }
@@ -420,11 +430,21 @@ export default function CorrelationsPage() {
                             if (active && payload && payload.length) {
                               const data = payload[0].payload;
                               return (
-                                <div className="bg-card border rounded p-2 text-sm">
-                                  <p className="font-medium">Lag: {data.lag} days</p>
-                                  <p>ρ = {data.rho.toFixed(3)}</p>
-                                  <p>p = {formatPValue(data.p_value)}</p>
-                                  <p>n = {data.n}</p>
+                                <div className="rounded-lg border bg-background p-3 shadow-lg">
+                                  <div className="grid gap-2">
+                                    <p className="text-sm font-bold">Lag: {data.lag} days</p>
+                                    <div className="space-y-1">
+                                      <p className="text-sm">
+                                        <span className="font-medium">ρ =</span> {data.rho.toFixed(3)}
+                                      </p>
+                                      <p className="text-sm">
+                                        <span className="font-medium">p =</span> {formatPValue(data.p_value)}
+                                      </p>
+                                      <p className="text-sm">
+                                        <span className="font-medium">n =</span> {data.n}
+                                      </p>
+                                    </div>
+                                  </div>
                                 </div>
                               );
                             }

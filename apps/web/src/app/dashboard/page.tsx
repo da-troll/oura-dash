@@ -31,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ChartTooltip } from "@/components/ui/chart-tooltip";
 import { Settings } from "lucide-react";
 import { useRouter } from "next/navigation";
 
@@ -115,6 +116,21 @@ export default function DashboardPage() {
 
   const hasData = data?.connected && data.summary.days_with_data > 0;
 
+  const getTooltipConfig = (name: string) => {
+    switch (name) {
+      case "steps":
+        return { unit: "", precision: 0 };
+      case "sleep_hours":
+        return { unit: "h", precision: 1 };
+      case "hrv":
+        return { unit: " ms", precision: 0 };
+      case "rhr":
+        return { unit: " bpm", precision: 0 };
+      default:
+        return { unit: "", precision: 0 };
+    }
+  };
+
   const renderChart = (
     name: string,
     title: string,
@@ -131,6 +147,8 @@ export default function DashboardPage() {
       );
     }
 
+    const tooltipConfig = getTooltipConfig(name);
+
     if (isBar) {
       return (
         <ResponsiveContainer width="100%" height="100%">
@@ -144,11 +162,7 @@ export default function DashboardPage() {
             />
             <YAxis tick={{ fontSize: 10 }} domain={domain} className="text-muted-foreground" />
             <Tooltip
-              contentStyle={{
-                backgroundColor: "hsl(var(--card))",
-                border: "1px solid hsl(var(--border))",
-                borderRadius: "6px",
-              }}
+              content={<ChartTooltip unit={tooltipConfig.unit} precision={tooltipConfig.precision} />}
             />
             <Bar dataKey="value" fill={color} name={title} radius={[2, 2, 0, 0]} />
           </BarChart>
@@ -168,11 +182,7 @@ export default function DashboardPage() {
           />
           <YAxis tick={{ fontSize: 10 }} domain={domain} className="text-muted-foreground" />
           <Tooltip
-            contentStyle={{
-              backgroundColor: "hsl(var(--card))",
-              border: "1px solid hsl(var(--border))",
-              borderRadius: "6px",
-            }}
+            content={<ChartTooltip unit={tooltipConfig.unit} precision={tooltipConfig.precision} />}
           />
           <Line
             type="monotone"
