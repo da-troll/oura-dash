@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -28,7 +28,7 @@ interface SyncResult {
   message?: string;
 }
 
-export default function SettingsPage() {
+function SettingsContent() {
   const searchParams = useSearchParams();
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -264,6 +264,9 @@ export default function SettingsPage() {
           <Link href="/dashboard">
             <Button variant="outline">Dashboard</Button>
           </Link>
+          <Link href="/insights">
+            <Button variant="outline">Insights</Button>
+          </Link>
           <Link href="/correlations">
             <Button variant="outline">Correlations</Button>
           </Link>
@@ -273,5 +276,13 @@ export default function SettingsPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={<div className="container mx-auto py-8"><div className="animate-pulse">Loading...</div></div>}>
+      <SettingsContent />
+    </Suspense>
   );
 }

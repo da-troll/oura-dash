@@ -15,13 +15,18 @@ from app.schemas import (
     AuthStatusResponse,
     AuthUrlResponse,
     ChangePointResponse,
+    ChronotypeResponse,
     ControlledCorrelationResponse,
     DashboardResponse,
     DashboardSummary,
     ExchangeCodeRequest,
     ExchangeCodeResponse,
     HealthResponse,
+    HeatmapPoint,
+    HeatmapResponse,
     LaggedCorrelationResponse,
+    SleepArchitectureDay,
+    SleepArchitectureResponse,
     SpearmanResponse,
     SyncResponse,
     TrendPoint,
@@ -404,4 +409,267 @@ async def analyze_weekly_clusters(
             for w in result["weeks"]
         ],
         cluster_profiles=result["cluster_profiles"],
+    )
+
+
+# ============================================
+# Insights Endpoints (Phase 1)
+# ============================================
+
+
+@app.get("/insights/heatmap", response_model=HeatmapResponse)
+async def get_heatmap(
+    metric: str = Query(..., description="Metric to display"),
+    days: int = Query(365, description="Number of days to show"),
+):
+    """Get annual heatmap data for a metric."""
+    async with get_db() as conn:
+        async with conn.cursor() as cur:
+            # Map friendly metric names to actual columns
+            metric_map = {
+                "readiness_score": "readiness_score",
+                "sleep_score": "sleep_score",
+                "activity_score": "activity_score",
+                "steps": "steps",
+                "hrv_average": "hrv_average",
+                "hr_lowest": "hr_lowest",
+                "sleep_total_seconds": "sleep_total_seconds / 3600.0",
+                "sleep_efficiency": "sleep_efficiency",
+                "sleep_deep_seconds": "sleep_deep_seconds / 3600.0",
+                "sleep_rem_seconds": "sleep_rem_seconds / 3600.0",
+                "cal_total": "cal_total",
+                "cal_active": "cal_active",
+            }
+
+            column = metric_map.get(metric, metric)
+
+            await cur.execute(f"""
+                SELECT
+                    date,
+                    {column} as value
+                FROM oura_daily
+                WHERE date >= CURRENT_DATE - INTERVAL '{days} days'
+                ORDER BY date
+            """)
+            rows = await cur.fetchall()
+
+            # Calculate min/max for color scaling
+            values = [r["value"] for r in rows if r["value"] is not None]
+            min_val = min(values) if values else None
+            max_val = max(values) if values else None
+
+    return HeatmapResponse(
+        metric=metric,
+        data=[
+            HeatmapPoint(date=str(r["date"]), value=float(r["value"]) if r["value"] else None)
+            for r in rows
+        ],
+        min_value=min_val,
+        max_value=max_val,
+    )
+
+
+@app.get("/insights/sleep-architecture", response_model=SleepArchitectureResponse)
+async def get_sleep_architecture(
+    days: int = Query(30, description="Number of days to show"),
+):
+    """Get sleep stage architecture data."""
+    async with get_db() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                SELECT
+                    date,
+                    sleep_total_seconds,
+                    sleep_deep_seconds,
+                    sleep_rem_seconds
+                FROM oura_daily
+                WHERE date >= CURRENT_DATE - INTERVAL '%s days'
+                AND sleep_total_seconds IS NOT NULL
+                AND sleep_total_seconds > 0
+                ORDER BY date
+            """, (days,))
+            rows = await cur.fetchall()
+
+    data = []
+    total_deep_pct = 0
+    total_rem_pct = 0
+    total_light_pct = 0
+    valid_days = 0
+
+    for r in rows:
+        total = r["sleep_total_seconds"]
+        deep = r["sleep_deep_seconds"] or 0
+        rem = r["sleep_rem_seconds"] or 0
+        light = total - deep - rem
+
+        if total > 0:
+            deep_pct = round((deep / total) * 100, 1)
+            rem_pct = round((rem / total) * 100, 1)
+            light_pct = round((light / total) * 100, 1)
+            total_hours = round(total / 3600, 1)
+
+            data.append(SleepArchitectureDay(
+                date=str(r["date"]),
+                deep_pct=deep_pct,
+                rem_pct=rem_pct,
+                light_pct=light_pct,
+                total_hours=total_hours,
+            ))
+
+            total_deep_pct += deep_pct
+            total_rem_pct += rem_pct
+            total_light_pct += light_pct
+            valid_days += 1
+
+    return SleepArchitectureResponse(
+        data=data,
+        avg_deep_pct=round(total_deep_pct / valid_days, 1) if valid_days else None,
+        avg_rem_pct=round(total_rem_pct / valid_days, 1) if valid_days else None,
+        avg_light_pct=round(total_light_pct / valid_days, 1) if valid_days else None,
+    )
+
+
+@app.get("/insights/chronotype", response_model=ChronotypeResponse)
+async def get_chronotype():
+    """Analyze chronotype and social jetlag from sleep patterns."""
+    async with get_db() as conn:
+        async with conn.cursor() as cur:
+            # Get sleep data with bedtime start info
+            # We need to query the raw sleep data to get bedtime_start and bedtime_end
+            await cur.execute("""
+                SELECT
+                    date,
+                    is_weekend,
+                    sleep_total_seconds
+                FROM oura_daily
+                WHERE sleep_total_seconds IS NOT NULL
+                AND sleep_total_seconds > 0
+                ORDER BY date DESC
+                LIMIT 90
+            """)
+            daily_rows = await cur.fetchall()
+
+            # For now, estimate midpoint from total sleep
+            # In a real implementation, we'd use bedtime_start from raw data
+            # Let's query raw sleep data for more accurate bedtimes
+            await cur.execute("""
+                SELECT
+                    r.date,
+                    r.payload->'sleep'->0->>'bedtime_start' as bedtime_start,
+                    r.payload->'sleep'->0->>'bedtime_end' as bedtime_end,
+                    d.is_weekend
+                FROM oura_raw r
+                JOIN oura_daily d ON r.date = d.date
+                WHERE r.payload->'sleep' IS NOT NULL
+                AND jsonb_array_length(r.payload->'sleep') > 0
+                ORDER BY r.date DESC
+                LIMIT 90
+            """)
+            raw_rows = await cur.fetchall()
+
+    if not raw_rows:
+        return ChronotypeResponse(
+            chronotype="unknown",
+            chronotype_label="Insufficient Data",
+            weekend_midpoint=None,
+            weekday_midpoint=None,
+            social_jetlag_minutes=None,
+            social_jetlag_label="N/A",
+            recommendation="Need more sleep data to determine chronotype.",
+        )
+
+    from datetime import datetime, timedelta
+
+    def parse_sleep_midpoint(bedtime_start: str, bedtime_end: str) -> float | None:
+        """Calculate sleep midpoint as hours from midnight."""
+        try:
+            start = datetime.fromisoformat(bedtime_start.replace("Z", "+00:00"))
+            end = datetime.fromisoformat(bedtime_end.replace("Z", "+00:00"))
+            midpoint = start + (end - start) / 2
+
+            # Convert to hours from midnight (handling overnight sleep)
+            hours = midpoint.hour + midpoint.minute / 60
+            # If midpoint is before 6am, add 24 to normalize (sleep went past midnight)
+            if hours < 6:
+                hours += 24
+            return hours
+        except (ValueError, TypeError):
+            return None
+
+    weekend_midpoints = []
+    weekday_midpoints = []
+
+    for r in raw_rows:
+        if r["bedtime_start"] and r["bedtime_end"]:
+            midpoint = parse_sleep_midpoint(r["bedtime_start"], r["bedtime_end"])
+            if midpoint:
+                if r["is_weekend"]:
+                    weekend_midpoints.append(midpoint)
+                else:
+                    weekday_midpoints.append(midpoint)
+
+    if not weekend_midpoints or not weekday_midpoints:
+        return ChronotypeResponse(
+            chronotype="unknown",
+            chronotype_label="Insufficient Data",
+            weekend_midpoint=None,
+            weekday_midpoint=None,
+            social_jetlag_minutes=None,
+            social_jetlag_label="N/A",
+            recommendation="Need more weekend and weekday sleep data.",
+        )
+
+    avg_weekend = sum(weekend_midpoints) / len(weekend_midpoints)
+    avg_weekday = sum(weekday_midpoints) / len(weekday_midpoints)
+
+    # Social jetlag is the difference
+    jetlag_hours = abs(avg_weekend - avg_weekday)
+    jetlag_minutes = int(jetlag_hours * 60)
+
+    # Format midpoints as HH:MM
+    def hours_to_time(h: float) -> str:
+        h = h % 24  # Normalize back
+        hours = int(h)
+        minutes = int((h - hours) * 60)
+        return f"{hours:02d}:{minutes:02d}"
+
+    weekend_midpoint_str = hours_to_time(avg_weekend)
+    weekday_midpoint_str = hours_to_time(avg_weekday)
+
+    # Determine chronotype based on weekend midpoint
+    # Before 3am = Morning Lark, After 5am = Night Owl, Between = Intermediate
+    if avg_weekend < 27:  # Before 3am (27 = 3am in our 24+ system)
+        chronotype = "morning_lark"
+        chronotype_label = "Morning Lark 🌅"
+    elif avg_weekend > 29:  # After 5am
+        chronotype = "night_owl"
+        chronotype_label = "Night Owl 🦉"
+    else:
+        chronotype = "intermediate"
+        chronotype_label = "Intermediate ⚖️"
+
+    # Format jetlag label
+    jetlag_h = jetlag_minutes // 60
+    jetlag_m = jetlag_minutes % 60
+    if jetlag_h > 0:
+        jetlag_label = f"{jetlag_h}h {jetlag_m}m"
+    else:
+        jetlag_label = f"{jetlag_m}m"
+
+    # Generate recommendation
+    if jetlag_minutes > 90:
+        recommendation = "High social jetlag detected. Try to keep sleep times more consistent between weekdays and weekends to improve energy levels."
+    elif jetlag_minutes > 60:
+        recommendation = "Moderate social jetlag. Consider gradually aligning your weekday and weekend sleep schedules."
+    else:
+        recommendation = "Good sleep consistency! Your sleep schedule is well-aligned between weekdays and weekends."
+
+    return ChronotypeResponse(
+        chronotype=chronotype,
+        chronotype_label=chronotype_label,
+        weekend_midpoint=weekend_midpoint_str,
+        weekday_midpoint=weekday_midpoint_str,
+        social_jetlag_minutes=jetlag_minutes,
+        social_jetlag_label=jetlag_label,
+        recommendation=recommendation,
     )

@@ -185,6 +185,9 @@ export default function PatternsPage() {
           <Link href="/dashboard">
             <Button variant="outline">Dashboard</Button>
           </Link>
+          <Link href="/insights">
+            <Button variant="outline">Insights</Button>
+          </Link>
           <Link href="/correlations">
             <Button variant="outline">Correlations</Button>
           </Link>

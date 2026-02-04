@@ -184,6 +184,9 @@ export default function DashboardPage() {
         <h1 className="text-3xl font-bold">Dashboard</h1>
         <div className="flex items-center gap-2">
           <ThemeToggle />
+          <Link href="/insights">
+            <Button variant="outline">Insights</Button>
+          </Link>
           <Link href="/correlations">
             <Button variant="outline">Correlations</Button>
           </Link>
@@ -346,7 +349,7 @@ export default function DashboardPage() {
                   <div>
                     <h4 className="text-sm font-medium mb-2">Daily Steps</h4>
                     <div className="h-[250px]">
-                      {renderChart("steps", "Steps", CHART_COLORS.steps, [0, "auto"] as [number, number], true)}
+                      {renderChart("steps", "Steps", CHART_COLORS.steps, undefined, true)}
                     </div>
                   </div>
                 </TabsContent>

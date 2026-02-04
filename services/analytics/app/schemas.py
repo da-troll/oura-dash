@@ -303,6 +303,58 @@ class DashboardResponse(BaseModel):
 
 
 # ============================================
+# Insights (Phase 1)
+# ============================================
+
+
+class HeatmapPoint(BaseModel):
+    """Single day in a heatmap."""
+
+    date: str
+    value: float | None
+
+
+class HeatmapResponse(BaseModel):
+    """Annual heatmap data response."""
+
+    metric: str
+    data: list[HeatmapPoint]
+    min_value: float | None = None
+    max_value: float | None = None
+
+
+class SleepArchitectureDay(BaseModel):
+    """Sleep stage percentages for a single night."""
+
+    date: str
+    deep_pct: float | None
+    rem_pct: float | None
+    light_pct: float | None
+    total_hours: float | None
+
+
+class SleepArchitectureResponse(BaseModel):
+    """Sleep architecture data response."""
+
+    data: list[SleepArchitectureDay]
+    avg_deep_pct: float | None = None
+    avg_rem_pct: float | None = None
+    avg_light_pct: float | None = None
+
+
+class ChronotypeResponse(BaseModel):
+    """Chronotype and social jetlag analysis."""
+
+    chronotype: str  # "morning_lark", "night_owl", or "intermediate"
+    chronotype_label: str  # Human-readable label
+    weekend_midpoint: str | None  # HH:MM format
+    weekday_midpoint: str | None  # HH:MM format
+    social_jetlag_minutes: int | None
+    social_jetlag_label: str  # Human-readable (e.g., "1h 15m")
+    recommendation: str | None
+
+
+# ============================================
 # Error Responses
 # ============================================
 

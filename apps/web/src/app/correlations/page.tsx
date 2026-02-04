@@ -201,6 +201,9 @@ export default function CorrelationsPage() {
           <Link href="/dashboard">
             <Button variant="outline">Dashboard</Button>
           </Link>
+          <Link href="/insights">
+            <Button variant="outline">Insights</Button>
+          </Link>
           <Link href="/patterns">
             <Button variant="outline">Patterns</Button>
           </Link>
