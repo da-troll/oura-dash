@@ -79,6 +79,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [days, setDays] = useState(7);
+  const [activeTab, setActiveTab] = useState("scores");
 
   useEffect(() => {
     async function fetchDashboard() {
@@ -350,7 +351,7 @@ export default function DashboardPage() {
               <CardDescription>Your metrics over the past {days} days</CardDescription>
             </CardHeader>
             <CardContent>
-              <Tabs defaultValue="scores" className="w-full">
+              <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
                 <TabsList className="grid w-full grid-cols-4 mb-4">
                   <TabsTrigger value="scores">Scores</TabsTrigger>
                   <TabsTrigger value="activity">Activity</TabsTrigger>
