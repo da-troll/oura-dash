@@ -78,12 +78,14 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [days, setDays] = useState(7);
 
   useEffect(() => {
     async function fetchDashboard() {
+      setLoading(true);
       try {
         const response = await fetch(
-          `${process.env.NEXT_PUBLIC_ANALYTICS_URL || "http://localhost:8001"}/dashboard`
+          `${process.env.NEXT_PUBLIC_ANALYTICS_URL || "http://localhost:8001"}/dashboard?days=${days}`
         );
         if (!response.ok) {
           throw new Error("Failed to fetch dashboard data");
@@ -97,7 +99,7 @@ export default function DashboardPage() {
       }
     }
     fetchDashboard();
-  }, []);
+  }, [days]);
 
   const formatValue = (value: number | null | undefined, suffix = "") => {
     if (value === null || value === undefined) return "--";
@@ -203,6 +205,16 @@ export default function DashboardPage() {
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-3xl font-bold">Dashboard</h1>
         <div className="flex items-center gap-2">
+          <Select value={String(days)} onValueChange={(v) => setDays(Number(v))}>
+            <SelectTrigger className="w-[100px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="7">7 days</SelectItem>
+              <SelectItem value="10">10 days</SelectItem>
+              <SelectItem value="30">30 days</SelectItem>
+            </SelectContent>
+          </Select>
           <Select value="dashboard" onValueChange={(value) => router.push(`/${value}`)}>
             <SelectTrigger className="w-[135px]">
               <SelectValue />
@@ -253,7 +265,7 @@ export default function DashboardPage() {
                 <span className="text-sm font-medium">Readiness</span>
                 <div className="text-right">
                   <div className="text-xl font-bold">{formatValue(data?.summary.readiness_avg)}</div>
-                  <p className="text-xs text-muted-foreground">7-day avg</p>
+                  <p className="text-xs text-muted-foreground">{days}-day avg</p>
                 </div>
               </CardContent>
             </Card>
@@ -263,7 +275,7 @@ export default function DashboardPage() {
                 <span className="text-sm font-medium">Sleep Score</span>
                 <div className="text-right">
                   <div className="text-xl font-bold">{formatValue(data?.summary.sleep_score_avg)}</div>
-                  <p className="text-xs text-muted-foreground">7-day avg</p>
+                  <p className="text-xs text-muted-foreground">{days}-day avg</p>
                 </div>
               </CardContent>
             </Card>
@@ -273,7 +285,7 @@ export default function DashboardPage() {
                 <span className="text-sm font-medium">Activity</span>
                 <div className="text-right">
                   <div className="text-xl font-bold">{formatValue(data?.summary.activity_avg)}</div>
-                  <p className="text-xs text-muted-foreground">7-day avg</p>
+                  <p className="text-xs text-muted-foreground">{days}-day avg</p>
                 </div>
               </CardContent>
             </Card>
@@ -283,7 +295,7 @@ export default function DashboardPage() {
                 <span className="text-sm font-medium">Steps</span>
                 <div className="text-right">
                   <div className="text-xl font-bold">{formatValue(data?.summary.steps_avg)}</div>
-                  <p className="text-xs text-muted-foreground">7-day avg</p>
+                  <p className="text-xs text-muted-foreground">{days}-day avg</p>
                 </div>
               </CardContent>
             </Card>
@@ -293,7 +305,7 @@ export default function DashboardPage() {
                 <span className="text-sm font-medium">HRV</span>
                 <div className="text-right">
                   <div className="text-xl font-bold">{formatValue(data?.summary.hrv_avg, " ms")}</div>
-                  <p className="text-xs text-muted-foreground">7-day avg</p>
+                  <p className="text-xs text-muted-foreground">{days}-day avg</p>
                 </div>
               </CardContent>
             </Card>
@@ -303,7 +315,7 @@ export default function DashboardPage() {
                 <span className="text-sm font-medium">Resting HR</span>
                 <div className="text-right">
                   <div className="text-xl font-bold">{formatValue(data?.summary.rhr_avg, " bpm")}</div>
-                  <p className="text-xs text-muted-foreground">7-day avg</p>
+                  <p className="text-xs text-muted-foreground">{days}-day avg</p>
                 </div>
               </CardContent>
             </Card>
@@ -315,7 +327,7 @@ export default function DashboardPage() {
                   <div className="text-xl font-bold">
                     {data?.summary.sleep_hours_avg ? `${data.summary.sleep_hours_avg.toFixed(1)}h` : "--"}
                   </div>
-                  <p className="text-xs text-muted-foreground">7-day avg</p>
+                  <p className="text-xs text-muted-foreground">{days}-day avg</p>
                 </div>
               </CardContent>
             </Card>
@@ -325,7 +337,7 @@ export default function DashboardPage() {
                 <span className="text-sm font-medium">Calories</span>
                 <div className="text-right">
                   <div className="text-xl font-bold">{formatValue(data?.summary.calories_avg)}</div>
-                  <p className="text-xs text-muted-foreground">7-day avg</p>
+                  <p className="text-xs text-muted-foreground">{days}-day avg</p>
                 </div>
               </CardContent>
             </Card>
@@ -335,7 +347,7 @@ export default function DashboardPage() {
           <Card>
             <CardHeader>
               <CardTitle>Trends</CardTitle>
-              <CardDescription>Your metrics over the past 60 days</CardDescription>
+              <CardDescription>Your metrics over the past {days} days</CardDescription>
             </CardHeader>
             <CardContent>
               <Tabs defaultValue="scores" className="w-full">

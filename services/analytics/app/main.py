@@ -72,8 +72,13 @@ async def health_check() -> HealthResponse:
 
 
 @app.get("/dashboard", response_model=DashboardResponse)
-async def get_dashboard() -> DashboardResponse:
+async def get_dashboard(
+    days: int = Query(default=7, description="Number of days for averages and trends"),
+) -> DashboardResponse:
     """Get dashboard summary data."""
+    if days not in (7, 10, 30):
+        raise HTTPException(status_code=400, detail="days must be 7, 10, or 30")
+
     # Check auth status
     status = await oura_auth.get_auth_status()
     if not status["connected"]:
@@ -85,7 +90,7 @@ async def get_dashboard() -> DashboardResponse:
 
     async with get_db() as conn:
         async with conn.cursor() as cur:
-            # Get 7-day averages for all key metrics
+            # Get averages for the selected period
             await cur.execute("""
                 SELECT
                     AVG(readiness_score) as readiness_avg,
@@ -98,15 +103,15 @@ async def get_dashboard() -> DashboardResponse:
                     AVG(cal_total) as calories_avg,
                     COUNT(*) as days_with_data
                 FROM oura_daily
-                WHERE date >= CURRENT_DATE - INTERVAL '7 days'
+                WHERE date >= CURRENT_DATE - %(days)s
                 AND (readiness_score IS NOT NULL
                      OR sleep_score IS NOT NULL
                      OR activity_score IS NOT NULL
                      OR steps IS NOT NULL)
-            """)
+            """, {"days": days})
             summary_row = await cur.fetchone()
 
-            # Get all trend data for the past 60 days
+            # Get trend data for the selected period
             await cur.execute("""
                 SELECT
                     date,
@@ -118,9 +123,9 @@ async def get_dashboard() -> DashboardResponse:
                     hr_lowest as rhr,
                     sleep_total_seconds / 3600.0 as sleep_hours
                 FROM oura_daily
-                WHERE date >= CURRENT_DATE - INTERVAL '60 days'
+                WHERE date >= CURRENT_DATE - %(days)s
                 ORDER BY date
-            """)
+            """, {"days": days})
             trend_rows = await cur.fetchall()
 
     summary = DashboardSummary(
