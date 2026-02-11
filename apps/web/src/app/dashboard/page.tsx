@@ -44,6 +44,10 @@ interface DashboardSummary {
   rhr_avg: number | null;
   sleep_hours_avg: number | null;
   calories_avg: number | null;
+  stress_avg: number | null;
+  recovery_avg: number | null;
+  spo2_avg: number | null;
+  workout_minutes_avg: number | null;
   days_with_data: number;
 }
 
@@ -71,6 +75,10 @@ const CHART_COLORS = {
   hrv: "#0891b2",
   rhr: "#dc2626",
   sleep_hours: "#8b5cf6",
+  stress: "#f59e0b",
+  recovery: "#10b981",
+  spo2: "#6366f1",
+  workout_minutes: "#f97316",
 };
 
 export default function DashboardPage() {
@@ -129,6 +137,13 @@ export default function DashboardPage() {
         return { unit: " ms", precision: 0 };
       case "rhr":
         return { unit: " bpm", precision: 0 };
+      case "stress":
+      case "recovery":
+        return { unit: " min", precision: 0 };
+      case "spo2":
+        return { unit: "%", precision: 1 };
+      case "workout_minutes":
+        return { unit: " min", precision: 0 };
       default:
         return { unit: "", precision: 0 };
     }
@@ -342,6 +357,48 @@ export default function DashboardPage() {
                 </div>
               </CardContent>
             </Card>
+
+            <Card className="py-3">
+              <CardContent className="flex items-center justify-between p-0 px-4">
+                <span className="text-sm font-medium">Stress</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">{formatValue(data?.summary.stress_avg, " min")}</div>
+                  <p className="text-xs text-muted-foreground">{days}-day avg</p>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="py-3">
+              <CardContent className="flex items-center justify-between p-0 px-4">
+                <span className="text-sm font-medium">Recovery</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">{formatValue(data?.summary.recovery_avg, " min")}</div>
+                  <p className="text-xs text-muted-foreground">{days}-day avg</p>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="py-3">
+              <CardContent className="flex items-center justify-between p-0 px-4">
+                <span className="text-sm font-medium">SpO2</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">
+                    {data?.summary.spo2_avg ? `${data.summary.spo2_avg.toFixed(1)}%` : "--"}
+                  </div>
+                  <p className="text-xs text-muted-foreground">{days}-day avg</p>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="py-3">
+              <CardContent className="flex items-center justify-between p-0 px-4">
+                <span className="text-sm font-medium">Workouts</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">{formatValue(data?.summary.workout_minutes_avg, " min")}</div>
+                  <p className="text-xs text-muted-foreground">{days}-day avg</p>
+                </div>
+              </CardContent>
+            </Card>
           </div>
 
           {/* Trend Charts with Tabs */}
@@ -352,11 +409,12 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent>
               <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-                <TabsList className="grid w-full grid-cols-4 mb-4">
+                <TabsList className="grid w-full grid-cols-5 mb-4">
                   <TabsTrigger value="scores">Scores</TabsTrigger>
                   <TabsTrigger value="activity">Activity</TabsTrigger>
                   <TabsTrigger value="heart">Heart</TabsTrigger>
                   <TabsTrigger value="sleep">Sleep</TabsTrigger>
+                  <TabsTrigger value="body">Body</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="scores" className="space-y-4">
@@ -383,10 +441,18 @@ export default function DashboardPage() {
                 </TabsContent>
 
                 <TabsContent value="activity" className="space-y-4">
-                  <div>
-                    <h4 className="text-sm font-medium mb-2">Daily Steps</h4>
-                    <div className="h-[250px]">
-                      {renderChart("steps", "Steps", CHART_COLORS.steps, undefined, true)}
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">Daily Steps</h4>
+                      <div className="h-[200px]">
+                        {renderChart("steps", "Steps", CHART_COLORS.steps, undefined, true)}
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">Workout Duration</h4>
+                      <div className="h-[200px]">
+                        {renderChart("workout_minutes", "Workout", CHART_COLORS.workout_minutes, undefined, true)}
+                      </div>
                     </div>
                   </div>
                 </TabsContent>
@@ -420,6 +486,29 @@ export default function DashboardPage() {
                       <h4 className="text-sm font-medium mb-2">Sleep Duration (hours)</h4>
                       <div className="h-[200px]">
                         {renderChart("sleep_hours", "Hours", CHART_COLORS.sleep_hours, [0, 12])}
+                      </div>
+                    </div>
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="body" className="space-y-4">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">Stress (high minutes)</h4>
+                      <div className="h-[200px]">
+                        {renderChart("stress", "Stress", CHART_COLORS.stress, undefined, true)}
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">Recovery (high minutes)</h4>
+                      <div className="h-[200px]">
+                        {renderChart("recovery", "Recovery", CHART_COLORS.recovery, undefined, true)}
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">Blood Oxygen (SpO2)</h4>
+                      <div className="h-[200px]">
+                        {renderChart("spo2", "SpO2", CHART_COLORS.spo2, [90, 100])}
                       </div>
                     </div>
                   </div>

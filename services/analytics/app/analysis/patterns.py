@@ -74,7 +74,7 @@ def detect_change_points(
         return []
 
     # Handle NaN by interpolation
-    series_clean = pd.Series(series).interpolate().fillna(method="bfill").fillna(method="ffill").values
+    series_clean = pd.Series(series).interpolate().bfill().ffill().values
 
     try:
         # PELT algorithm with rbf model

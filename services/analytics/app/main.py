@@ -17,6 +17,7 @@ from app.schemas import (
     ChangePointResponse,
     ChronotypeResponse,
     ControlledCorrelationResponse,
+    CorrelationMatrixResponse,
     DashboardResponse,
     DashboardSummary,
     ExchangeCodeRequest,
@@ -25,6 +26,8 @@ from app.schemas import (
     HeatmapPoint,
     HeatmapResponse,
     LaggedCorrelationResponse,
+    PersonalInfoResponse,
+    ScatterDataResponse,
     SleepArchitectureDay,
     SleepArchitectureResponse,
     SpearmanResponse,
@@ -101,6 +104,10 @@ async def get_dashboard(
                     AVG(hr_lowest) as rhr_avg,
                     AVG(sleep_total_seconds / 3600.0) as sleep_hours_avg,
                     AVG(cal_total) as calories_avg,
+                    AVG(stress_high_minutes) as stress_avg,
+                    AVG(recovery_high_minutes) as recovery_avg,
+                    AVG(spo2_average) as spo2_avg,
+                    AVG(workout_total_minutes) as workout_minutes_avg,
                     COUNT(*) as days_with_data
                 FROM oura_daily
                 WHERE date >= CURRENT_DATE - %(days)s
@@ -121,7 +128,11 @@ async def get_dashboard(
                     steps,
                     hrv_average,
                     hr_lowest as rhr,
-                    sleep_total_seconds / 3600.0 as sleep_hours
+                    sleep_total_seconds / 3600.0 as sleep_hours,
+                    stress_high_minutes,
+                    recovery_high_minutes,
+                    spo2_average,
+                    workout_total_minutes
                 FROM oura_daily
                 WHERE date >= CURRENT_DATE - %(days)s
                 ORDER BY date
@@ -137,6 +148,10 @@ async def get_dashboard(
         rhr_avg=round(summary_row["rhr_avg"], 1) if summary_row["rhr_avg"] else None,
         sleep_hours_avg=round(summary_row["sleep_hours_avg"], 1) if summary_row["sleep_hours_avg"] else None,
         calories_avg=round(summary_row["calories_avg"]) if summary_row["calories_avg"] else None,
+        stress_avg=round(summary_row["stress_avg"], 1) if summary_row["stress_avg"] else None,
+        recovery_avg=round(summary_row["recovery_avg"], 1) if summary_row["recovery_avg"] else None,
+        spo2_avg=round(summary_row["spo2_avg"], 1) if summary_row["spo2_avg"] else None,
+        workout_minutes_avg=round(summary_row["workout_minutes_avg"], 1) if summary_row["workout_minutes_avg"] else None,
         days_with_data=summary_row["days_with_data"] or 0,
     )
 
@@ -158,6 +173,10 @@ async def get_dashboard(
         TrendSeries(name="hrv", data=build_trend("hrv_average")),
         TrendSeries(name="rhr", data=build_trend("rhr")),
         TrendSeries(name="sleep_hours", data=build_trend("sleep_hours")),
+        TrendSeries(name="stress", data=build_trend("stress_high_minutes")),
+        TrendSeries(name="recovery", data=build_trend("recovery_high_minutes")),
+        TrendSeries(name="spo2", data=build_trend("spo2_average")),
+        TrendSeries(name="workout_minutes", data=build_trend("workout_total_minutes")),
     ]
 
     return DashboardResponse(
@@ -288,6 +307,42 @@ async def analyze_spearman(
             }
             for c in result["correlations"]
         ],
+    )
+
+
+@app.post("/analyze/correlations/matrix", response_model=CorrelationMatrixResponse)
+async def analyze_correlation_matrix(
+    metrics: list[str] = Query(..., description="Metrics to include in matrix"),
+    start: date | None = Query(None, description="Start date (optional)"),
+    end: date | None = Query(None, description="End date (optional)"),
+):
+    """Compute pairwise Spearman correlation matrix for selected metrics."""
+    result = await correlations.get_correlation_matrix(metrics, start, end)
+    return CorrelationMatrixResponse(
+        metrics=result["metrics"],
+        matrix=result["matrix"],
+        p_values=result["p_values"],
+        n_matrix=result["n_matrix"],
+    )
+
+
+@app.post("/analyze/correlations/scatter-data", response_model=ScatterDataResponse)
+async def analyze_scatter_data(
+    metric_x: str = Query(..., description="X-axis metric"),
+    metric_y: str = Query(..., description="Y-axis metric"),
+    start: date | None = Query(None, description="Start date (optional)"),
+    end: date | None = Query(None, description="End date (optional)"),
+):
+    """Get scatter plot data for two metrics."""
+    result = await correlations.get_scatter_data(metric_x, metric_y, start, end)
+    return ScatterDataResponse(
+        metric_x=result["metric_x"],
+        metric_y=result["metric_y"],
+        points=[
+            {"x": p["x"], "y": p["y"], "date": p["date"]}
+            for p in result["points"]
+        ],
+        n=result["n"],
     )
 
 
@@ -444,6 +499,13 @@ async def get_heatmap(
                 "sleep_rem_seconds": "sleep_rem_seconds / 3600.0",
                 "cal_total": "cal_total",
                 "cal_active": "cal_active",
+                "stress_high_minutes": "stress_high_minutes",
+                "recovery_high_minutes": "recovery_high_minutes",
+                "spo2_average": "spo2_average",
+                "vascular_age": "vascular_age",
+                "workout_total_minutes": "workout_total_minutes",
+                "workout_count": "workout_count",
+                "sleep_breath_average": "sleep_breath_average",
             }
 
             column = metric_map.get(metric, metric)
@@ -675,4 +737,25 @@ async def get_chronotype():
         social_jetlag_minutes=jetlag_minutes,
         social_jetlag_label=jetlag_label,
         recommendation=recommendation,
+    )
+
+
+@app.get("/personal-info", response_model=PersonalInfoResponse)
+async def get_personal_info() -> PersonalInfoResponse:
+    """Get stored personal info."""
+    async with get_db() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM oura_personal_info WHERE id = 1")
+            row = await cur.fetchone()
+
+    if not row:
+        return PersonalInfoResponse()
+
+    return PersonalInfoResponse(
+        age=row["age"],
+        weight=float(row["weight"]) if row["weight"] else None,
+        height=float(row["height"]) if row["height"] else None,
+        biological_sex=row["biological_sex"],
+        email=row["email"],
+        fetched_at=row["fetched_at"],
     )

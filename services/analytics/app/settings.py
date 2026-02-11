@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     oura_token_url: str = "https://api.ouraring.com/oauth/token"
 
     # Scopes for Oura API
-    oura_scopes: str = "daily heartrate tag session workout personal"
+    oura_scopes: str = "daily heartrate tag session workout personal spo2 heart_health"
 
 
 settings = Settings()

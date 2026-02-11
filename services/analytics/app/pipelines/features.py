@@ -1,6 +1,7 @@
 """Feature engineering pipeline: daily → features table."""
 
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Any
 
 import numpy as np
@@ -34,7 +35,11 @@ async def load_daily_data(start_date: date, end_date: date) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
 
-    df = pd.DataFrame([dict(r) for r in rows])
+    # Convert Decimal values to float for numpy/pandas compatibility
+    def convert_row(r: dict) -> dict:
+        return {k: float(v) if isinstance(v, Decimal) else v for k, v in r.items()}
+
+    df = pd.DataFrame([convert_row(dict(r)) for r in rows])
     df["date"] = pd.to_datetime(df["date"])
     df = df.set_index("date").sort_index()
     return df
@@ -165,6 +170,56 @@ def compute_rolling_features(
             if not np.any(np.isnan(y)):
                 slope, _ = np.polyfit(x, y, 1)
                 features["trend_7_sleep_total_seconds"] = float(slope)
+
+    # HRV rolling means
+    if "hrv_average" in history.columns:
+        hrv = history["hrv_average"].dropna()
+        if len(hrv) >= 8:
+            features["rm_7_hrv_average"] = float(hrv.iloc[:-1].tail(7).mean())
+        if len(hrv) >= 15:
+            features["rm_14_hrv_average"] = float(hrv.iloc[:-1].tail(14).mean())
+        if len(hrv) >= 29:
+            features["rm_28_hrv_average"] = float(hrv.iloc[:-1].tail(28).mean())
+
+        # HRV delta vs 7-day mean
+        if "rm_7_hrv_average" in features and features["rm_7_hrv_average"] is not None:
+            current_hrv = history.loc[target_dt, "hrv_average"]
+            if pd.notna(current_hrv):
+                features["delta_hrv_vs_rm7"] = float(current_hrv - features["rm_7_hrv_average"])
+
+        # HRV 7-day variability
+        if len(hrv) >= 8:
+            features["sd_7_hrv_average"] = float(hrv.iloc[:-1].tail(7).std())
+
+        # HRV 7-day trend
+        if len(hrv) >= 8:
+            recent_hrv = hrv.iloc[:-1].tail(7)
+            if len(recent_hrv) == 7:
+                x = np.arange(7)
+                y = recent_hrv.values
+                if not np.any(np.isnan(y)):
+                    slope, _ = np.polyfit(x, y, 1)
+                    features["trend_7_hrv_average"] = float(slope)
+
+    # Stress rolling means
+    if "stress_high_minutes" in history.columns:
+        stress = history["stress_high_minutes"].dropna()
+        if len(stress) >= 8:
+            features["rm_7_stress_high_minutes"] = float(stress.iloc[:-1].tail(7).mean())
+        if len(stress) >= 15:
+            features["rm_14_stress_high_minutes"] = float(stress.iloc[:-1].tail(14).mean())
+
+    # SpO2 rolling mean
+    if "spo2_average" in history.columns:
+        spo2 = history["spo2_average"].dropna()
+        if len(spo2) >= 8:
+            features["rm_7_spo2_average"] = float(spo2.iloc[:-1].tail(7).mean())
+
+    # Workout rolling mean
+    if "workout_total_minutes" in history.columns:
+        workouts = history["workout_total_minutes"].dropna()
+        if len(workouts) >= 8:
+            features["rm_7_workout_total_minutes"] = float(workouts.iloc[:-1].tail(7).mean())
 
     return features
 

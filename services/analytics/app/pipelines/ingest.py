@@ -61,6 +61,9 @@ async def ingest_raw_data(
             "sleep",
             "daily_readiness",
             "daily_activity",
+            "daily_stress",
+            "daily_spo2",
+            "daily_cardiovascular_age",
             "tag",
             "workout",
             "session",
@@ -73,6 +76,9 @@ async def ingest_raw_data(
         "sleep": oura_client.fetch_sleep_sessions,
         "daily_readiness": oura_client.fetch_daily_readiness,
         "daily_activity": oura_client.fetch_daily_activity,
+        "daily_stress": oura_client.fetch_daily_stress,
+        "daily_spo2": oura_client.fetch_daily_spo2,
+        "daily_cardiovascular_age": oura_client.fetch_daily_cardiovascular_age,
         "tag": oura_client.fetch_tags,
         "workout": oura_client.fetch_workouts,
         "session": oura_client.fetch_sessions,
@@ -84,7 +90,11 @@ async def ingest_raw_data(
                 continue
 
             fetch_fn = fetch_map[data_type]
-            records = await fetch_fn(start_date, end_date)
+            try:
+                records = await fetch_fn(start_date, end_date)
+            except Exception:
+                counts[data_type] = 0
+                continue
             counts[data_type] = len(records)
 
             for record in records:
@@ -178,6 +188,62 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
                 activity_row = await cur.fetchone()
                 activity_data = activity_row["payload"] if activity_row else {}
 
+                # Get daily_stress data
+                await cur.execute(
+                    """
+                    SELECT payload FROM oura_raw
+                    WHERE source = 'daily_stress' AND day = %(day)s
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    {"day": str(current)},
+                )
+                stress_row = await cur.fetchone()
+                stress_data = stress_row["payload"] if stress_row else {}
+
+                # Get daily_spo2 data
+                await cur.execute(
+                    """
+                    SELECT payload FROM oura_raw
+                    WHERE source = 'daily_spo2' AND day = %(day)s
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    {"day": str(current)},
+                )
+                spo2_row = await cur.fetchone()
+                spo2_data = spo2_row["payload"] if spo2_row else {}
+
+                # Get daily_cardiovascular_age data
+                await cur.execute(
+                    """
+                    SELECT payload FROM oura_raw
+                    WHERE source = 'daily_cardiovascular_age' AND day = %(day)s
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    {"day": str(current)},
+                )
+                cardio_age_row = await cur.fetchone()
+                cardio_age_data = cardio_age_row["payload"] if cardio_age_row else {}
+
+                # Get all workout records for this day
+                await cur.execute(
+                    """
+                    SELECT payload FROM oura_raw
+                    WHERE source = 'workout' AND day = %(day)s
+                    """,
+                    {"day": str(current)},
+                )
+                workout_rows = await cur.fetchall()
+
+                # Get all session records for this day
+                await cur.execute(
+                    """
+                    SELECT payload FROM oura_raw
+                    WHERE source = 'session' AND day = %(day)s
+                    """,
+                    {"day": str(current)},
+                )
+                session_rows = await cur.fetchall()
+
             # Extract metrics
             weekday = current.weekday()  # 0=Monday, 6=Sunday
             is_weekend = weekday >= 5
@@ -227,8 +293,97 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
             high_activity = activity_data.get("high_activity_met_minutes")
             sedentary = activity_data.get("sedentary_met_minutes")
 
+            # Stress metrics (from daily_stress, API returns seconds → convert to minutes)
+            stress_high_raw = stress_data.get("stress_high")
+            recovery_high_raw = stress_data.get("recovery_high")
+            stress_high = round(stress_high_raw / 60) if stress_high_raw else stress_high_raw
+            recovery_high = round(recovery_high_raw / 60) if recovery_high_raw else recovery_high_raw
+            stress_day_summary = stress_data.get("day_summary")
+
+            # SpO2 metrics (from daily_spo2)
+            spo2_percentage = spo2_data.get("spo2_percentage", {})
+            spo2_average = spo2_percentage.get("average") if isinstance(spo2_percentage, dict) else None
+            if spo2_average is not None and spo2_average == 0:
+                spo2_average = None  # Treat 0 as no reading
+            breathing_disturbance = spo2_data.get("breathing_disturbance_index")
+
+            # Cardiovascular age
+            vascular_age = cardio_age_data.get("vascular_age")
+
+            # Sleep breath average (from sleep session)
+            sleep_breath_average = sleep_session_data.get("average_breath")
+
+            # Activity contributors (from daily_activity)
+            activity_contributors = activity_data.get("contributors", {})
+            if not isinstance(activity_contributors, dict):
+                activity_contributors = {}
+            activity_meet_daily_targets = activity_contributors.get("meet_daily_targets")
+            activity_move_every_hour = activity_contributors.get("move_every_hour")
+            activity_recovery_time = activity_contributors.get("recovery_time")
+            activity_training_frequency = activity_contributors.get("training_frequency")
+            activity_training_volume = activity_contributors.get("training_volume")
+            non_wear = activity_data.get("non_wear_minutes")
+            inactivity_alerts_val = activity_data.get("inactivity_alerts")
+
+            # Readiness extras
+            readiness_sleep_balance = readiness_contributors.get("sleep_balance")
+
+            # Workout aggregation (deduplicate by ID, calc duration from timestamps)
+            unique_workouts: dict[str, dict] = {}
+            for wr in workout_rows:
+                wid = wr["payload"].get("id", "")
+                if wid not in unique_workouts:
+                    unique_workouts[wid] = wr["payload"]
+            workout_count = len(unique_workouts)
+            workout_total_minutes = None
+            workout_total_calories = None
+            if workout_count > 0:
+                total_minutes = 0.0
+                total_cal = 0.0
+                for wp in unique_workouts.values():
+                    # Duration from start/end timestamps
+                    start_dt = wp.get("start_datetime")
+                    end_dt = wp.get("end_datetime")
+                    if start_dt and end_dt:
+                        try:
+                            s = datetime.fromisoformat(start_dt.replace("Z", "+00:00"))
+                            e = datetime.fromisoformat(end_dt.replace("Z", "+00:00"))
+                            total_minutes += (e - s).total_seconds() / 60
+                        except (ValueError, TypeError):
+                            pass
+                    cal = wp.get("calories", 0) or 0
+                    total_cal += cal
+                workout_total_minutes = round(total_minutes, 1) if total_minutes else None
+                workout_total_calories = round(total_cal, 1) if total_cal else None
+
+            # Session aggregation (deduplicate by ID)
+            unique_sessions: dict[str, dict] = {}
+            for sr in session_rows:
+                sid = sr["payload"].get("id", "")
+                if sid not in unique_sessions:
+                    unique_sessions[sid] = sr["payload"]
+            session_count = len(unique_sessions)
+            session_total_minutes = None
+            if session_count > 0:
+                total_minutes = 0.0
+                for sp in unique_sessions.values():
+                    start_dt = sp.get("start_datetime")
+                    end_dt = sp.get("end_datetime")
+                    if start_dt and end_dt:
+                        try:
+                            s = datetime.fromisoformat(start_dt.replace("Z", "+00:00"))
+                            e = datetime.fromisoformat(end_dt.replace("Z", "+00:00"))
+                            total_minutes += (e - s).total_seconds() / 60
+                        except (ValueError, TypeError):
+                            pass
+                session_total_minutes = round(total_minutes, 1) if total_minutes else None
+
             # Only insert if we have some data
-            if daily_sleep_data or sleep_session_data or readiness_data or activity_data:
+            has_data = (
+                daily_sleep_data or sleep_session_data or readiness_data
+                or activity_data or stress_data or spo2_data or cardio_age_data
+            )
+            if has_data:
                 await conn.execute(
                     """
                     INSERT INTO oura_daily (
@@ -239,7 +394,16 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
                         readiness_hrv_balance, readiness_recovery_index, readiness_activity_balance,
                         activity_score, steps, cal_total, cal_active, met_minutes,
                         low_activity_minutes, medium_activity_minutes, high_activity_minutes, sedentary_minutes,
-                        hr_lowest, hr_average, hrv_average
+                        hr_lowest, hr_average, hrv_average,
+                        stress_high_minutes, recovery_high_minutes, stress_day_summary,
+                        spo2_average, breathing_disturbance_index, vascular_age,
+                        sleep_breath_average,
+                        activity_meet_daily_targets, activity_move_every_hour,
+                        activity_recovery_time, activity_training_frequency, activity_training_volume,
+                        non_wear_seconds, inactivity_alerts,
+                        readiness_sleep_balance,
+                        workout_count, workout_total_minutes, workout_total_calories,
+                        session_count, session_total_minutes
                     )
                     VALUES (
                         %(date)s, %(weekday)s, %(is_weekend)s, %(season)s, %(is_holiday)s,
@@ -249,7 +413,16 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
                         %(readiness_hrv_balance)s, %(readiness_recovery_index)s, %(readiness_activity_balance)s,
                         %(activity_score)s, %(steps)s, %(cal_total)s, %(cal_active)s, %(met_minutes)s,
                         %(low_activity_minutes)s, %(medium_activity_minutes)s, %(high_activity_minutes)s, %(sedentary_minutes)s,
-                        %(hr_lowest)s, %(hr_average)s, %(hrv_average)s
+                        %(hr_lowest)s, %(hr_average)s, %(hrv_average)s,
+                        %(stress_high_minutes)s, %(recovery_high_minutes)s, %(stress_day_summary)s,
+                        %(spo2_average)s, %(breathing_disturbance_index)s, %(vascular_age)s,
+                        %(sleep_breath_average)s,
+                        %(activity_meet_daily_targets)s, %(activity_move_every_hour)s,
+                        %(activity_recovery_time)s, %(activity_training_frequency)s, %(activity_training_volume)s,
+                        %(non_wear_seconds)s, %(inactivity_alerts)s,
+                        %(readiness_sleep_balance)s,
+                        %(workout_count)s, %(workout_total_minutes)s, %(workout_total_calories)s,
+                        %(session_count)s, %(session_total_minutes)s
                     )
                     ON CONFLICT (date) DO UPDATE SET
                         weekday = EXCLUDED.weekday,
@@ -280,6 +453,26 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
                         hr_lowest = COALESCE(EXCLUDED.hr_lowest, oura_daily.hr_lowest),
                         hr_average = COALESCE(EXCLUDED.hr_average, oura_daily.hr_average),
                         hrv_average = COALESCE(EXCLUDED.hrv_average, oura_daily.hrv_average),
+                        stress_high_minutes = COALESCE(EXCLUDED.stress_high_minutes, oura_daily.stress_high_minutes),
+                        recovery_high_minutes = COALESCE(EXCLUDED.recovery_high_minutes, oura_daily.recovery_high_minutes),
+                        stress_day_summary = COALESCE(EXCLUDED.stress_day_summary, oura_daily.stress_day_summary),
+                        spo2_average = COALESCE(EXCLUDED.spo2_average, oura_daily.spo2_average),
+                        breathing_disturbance_index = COALESCE(EXCLUDED.breathing_disturbance_index, oura_daily.breathing_disturbance_index),
+                        vascular_age = COALESCE(EXCLUDED.vascular_age, oura_daily.vascular_age),
+                        sleep_breath_average = COALESCE(EXCLUDED.sleep_breath_average, oura_daily.sleep_breath_average),
+                        activity_meet_daily_targets = COALESCE(EXCLUDED.activity_meet_daily_targets, oura_daily.activity_meet_daily_targets),
+                        activity_move_every_hour = COALESCE(EXCLUDED.activity_move_every_hour, oura_daily.activity_move_every_hour),
+                        activity_recovery_time = COALESCE(EXCLUDED.activity_recovery_time, oura_daily.activity_recovery_time),
+                        activity_training_frequency = COALESCE(EXCLUDED.activity_training_frequency, oura_daily.activity_training_frequency),
+                        activity_training_volume = COALESCE(EXCLUDED.activity_training_volume, oura_daily.activity_training_volume),
+                        non_wear_seconds = COALESCE(EXCLUDED.non_wear_seconds, oura_daily.non_wear_seconds),
+                        inactivity_alerts = COALESCE(EXCLUDED.inactivity_alerts, oura_daily.inactivity_alerts),
+                        readiness_sleep_balance = COALESCE(EXCLUDED.readiness_sleep_balance, oura_daily.readiness_sleep_balance),
+                        workout_count = COALESCE(EXCLUDED.workout_count, oura_daily.workout_count),
+                        workout_total_minutes = COALESCE(EXCLUDED.workout_total_minutes, oura_daily.workout_total_minutes),
+                        workout_total_calories = COALESCE(EXCLUDED.workout_total_calories, oura_daily.workout_total_calories),
+                        session_count = COALESCE(EXCLUDED.session_count, oura_daily.session_count),
+                        session_total_minutes = COALESCE(EXCLUDED.session_total_minutes, oura_daily.session_total_minutes),
                         updated_at = NOW()
                     """,
                     {
@@ -313,6 +506,26 @@ async def normalize_daily_data(start_date: date, end_date: date) -> int:
                         "hr_lowest": hr_lowest,
                         "hr_average": hr_average,
                         "hrv_average": hrv_average,
+                        "stress_high_minutes": stress_high,
+                        "recovery_high_minutes": recovery_high,
+                        "stress_day_summary": stress_day_summary,
+                        "spo2_average": spo2_average,
+                        "breathing_disturbance_index": breathing_disturbance,
+                        "vascular_age": vascular_age,
+                        "sleep_breath_average": sleep_breath_average,
+                        "activity_meet_daily_targets": activity_meet_daily_targets,
+                        "activity_move_every_hour": activity_move_every_hour,
+                        "activity_recovery_time": activity_recovery_time,
+                        "activity_training_frequency": activity_training_frequency,
+                        "activity_training_volume": activity_training_volume,
+                        "non_wear_seconds": non_wear,
+                        "inactivity_alerts": inactivity_alerts_val,
+                        "readiness_sleep_balance": readiness_sleep_balance,
+                        "workout_count": workout_count,
+                        "workout_total_minutes": workout_total_minutes,
+                        "workout_total_calories": workout_total_calories,
+                        "session_count": session_count,
+                        "session_total_minutes": session_total_minutes,
                     },
                 )
                 days_processed += 1
@@ -397,6 +610,46 @@ async def ingest_tags(start_date: date, end_date: date) -> int:
     return tags_processed
 
 
+async def ingest_personal_info() -> bool:
+    """Fetch and store personal info from Oura API.
+
+    Returns:
+        True if personal info was stored successfully
+    """
+    try:
+        info = await oura_client.fetch_personal_info()
+    except Exception:
+        return False
+
+    if not info:
+        return False
+
+    async with get_db() as conn:
+        await conn.execute(
+            """
+            INSERT INTO oura_personal_info (id, age, weight, height, biological_sex, email, fetched_at)
+            VALUES (1, %(age)s, %(weight)s, %(height)s, %(biological_sex)s, %(email)s, NOW())
+            ON CONFLICT (id) DO UPDATE SET
+                age = COALESCE(EXCLUDED.age, oura_personal_info.age),
+                weight = COALESCE(EXCLUDED.weight, oura_personal_info.weight),
+                height = COALESCE(EXCLUDED.height, oura_personal_info.height),
+                biological_sex = COALESCE(EXCLUDED.biological_sex, oura_personal_info.biological_sex),
+                email = COALESCE(EXCLUDED.email, oura_personal_info.email),
+                fetched_at = NOW()
+            """,
+            {
+                "age": info.get("age"),
+                "weight": info.get("weight"),
+                "height": info.get("height"),
+                "biological_sex": info.get("biological_sex"),
+                "email": info.get("email"),
+            },
+        )
+        await conn.commit()
+
+    return True
+
+
 async def run_full_ingest(start_date: date, end_date: date) -> dict[str, Any]:
     """Run the full ingestion pipeline.
 
@@ -420,9 +673,17 @@ async def run_full_ingest(start_date: date, end_date: date) -> dict[str, Any]:
     # Step 3: Process tags
     tags_processed = await ingest_tags(start_date, end_date)
 
+    # Step 4: Personal info (best-effort)
+    personal_info_ok = False
+    try:
+        personal_info_ok = await ingest_personal_info()
+    except Exception:
+        pass
+
     return {
         "status": "completed",
         "raw_counts": raw_counts,
         "days_processed": days_processed,
         "tags_processed": tags_processed,
+        "personal_info": personal_info_ok,
     }

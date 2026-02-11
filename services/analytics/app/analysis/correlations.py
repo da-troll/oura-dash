@@ -219,9 +219,9 @@ def compute_controlled_correlation(
     # Partial correlation via regression residuals
     from sklearn.linear_model import LinearRegression
 
-    X_controls = clean_df[control_vars].values
-    x = clean_df[metric_x].values
-    y = clean_df[metric_y].values
+    X_controls = clean_df[control_vars].values.astype(float)
+    x = clean_df[metric_x].values.astype(float)
+    y = clean_df[metric_y].values.astype(float)
 
     # Regress X on controls
     reg_x = LinearRegression().fit(X_controls, x)
@@ -242,6 +242,113 @@ def compute_controlled_correlation(
         "n": len(clean_df),
         "controlled_for": control_vars,
     }
+
+
+def compute_correlation_matrix(
+    df: pd.DataFrame,
+    metrics: list[str],
+) -> dict[str, Any]:
+    """Compute pairwise Spearman correlation matrix for given metrics.
+
+    Args:
+        df: DataFrame with metric data
+        metrics: List of metric names to include
+
+    Returns:
+        Dict with metrics list, rho matrix, p-value matrix, and sample size matrix
+    """
+    available = [m for m in metrics if m in df.columns]
+    n = len(available)
+    matrix = [[0.0] * n for _ in range(n)]
+    p_values = [[0.0] * n for _ in range(n)]
+    n_matrix = [[0] * n for _ in range(n)]
+
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                matrix[i][j] = 1.0
+                p_values[i][j] = 0.0
+                n_obs = int(df[available[i]].dropna().shape[0])
+                n_matrix[i][j] = n_obs
+            elif j > i:
+                x = df[available[i]]
+                y = df[available[j]]
+                mask = x.notna() & y.notna()
+                n_obs = int(mask.sum())
+                if n_obs >= 10:
+                    rho, p = stats.spearmanr(x[mask], y[mask])
+                    if not np.isnan(rho):
+                        matrix[i][j] = float(rho)
+                        matrix[j][i] = float(rho)
+                        p_values[i][j] = float(p)
+                        p_values[j][i] = float(p)
+                n_matrix[i][j] = n_obs
+                n_matrix[j][i] = n_obs
+
+    return {
+        "metrics": available,
+        "matrix": matrix,
+        "p_values": p_values,
+        "n_matrix": n_matrix,
+    }
+
+
+def get_metric_pair_data(
+    df: pd.DataFrame,
+    metric_x: str,
+    metric_y: str,
+) -> dict[str, Any]:
+    """Extract aligned daily values for two metrics.
+
+    Args:
+        df: DataFrame with metric data
+        metric_x: First metric
+        metric_y: Second metric
+
+    Returns:
+        Dict with scatter points and sample size
+    """
+    if metric_x not in df.columns or metric_y not in df.columns:
+        return {"points": [], "n": 0}
+
+    mask = df[metric_x].notna() & df[metric_y].notna()
+    subset = df[mask]
+
+    points = []
+    for _, row in subset.iterrows():
+        points.append({
+            "x": float(row[metric_x]),
+            "y": float(row[metric_y]),
+            "date": str(row["date"]),
+        })
+
+    return {"points": points, "n": len(points)}
+
+
+async def get_correlation_matrix(
+    metrics: list[str],
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, Any]:
+    """Get pairwise correlation matrix for metrics."""
+    df = await load_analysis_data(start_date, end_date)
+    if df.empty:
+        return {"metrics": [], "matrix": [], "p_values": [], "n_matrix": []}
+    return compute_correlation_matrix(df, metrics)
+
+
+async def get_scatter_data(
+    metric_x: str,
+    metric_y: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, Any]:
+    """Get scatter plot data for two metrics."""
+    df = await load_analysis_data(start_date, end_date)
+    if df.empty:
+        return {"metric_x": metric_x, "metric_y": metric_y, "points": [], "n": 0}
+    result = get_metric_pair_data(df, metric_x, metric_y)
+    return {"metric_x": metric_x, "metric_y": metric_y, **result}
 
 
 async def get_spearman_correlations(

@@ -208,6 +208,39 @@ class OuraClient:
         )
         return response.get("data", [])
 
+    async def fetch_daily_stress(
+        self, start_date: date, end_date: date
+    ) -> list[dict[str, Any]]:
+        """Fetch daily stress data for a date range."""
+        response = await self._request(
+            "GET",
+            "/usercollection/daily_stress",
+            params={"start_date": str(start_date), "end_date": str(end_date)},
+        )
+        return response.get("data", [])
+
+    async def fetch_daily_spo2(
+        self, start_date: date, end_date: date
+    ) -> list[dict[str, Any]]:
+        """Fetch daily SpO2 data for a date range."""
+        response = await self._request(
+            "GET",
+            "/usercollection/daily_spo2",
+            params={"start_date": str(start_date), "end_date": str(end_date)},
+        )
+        return response.get("data", [])
+
+    async def fetch_daily_cardiovascular_age(
+        self, start_date: date, end_date: date
+    ) -> list[dict[str, Any]]:
+        """Fetch daily cardiovascular age data for a date range."""
+        response = await self._request(
+            "GET",
+            "/usercollection/daily_cardiovascular_age",
+            params={"start_date": str(start_date), "end_date": str(end_date)},
+        )
+        return response.get("data", [])
+
     async def fetch_personal_info(self) -> dict[str, Any]:
         """Fetch personal info."""
         return await self._request("GET", "/usercollection/personal_info")

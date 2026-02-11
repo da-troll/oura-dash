@@ -2,7 +2,6 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import Link from "next/link";
 
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -14,15 +13,15 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Settings as SettingsIcon } from "lucide-react";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ArrowLeft } from "lucide-react";
 
 interface AuthStatus {
   connected: boolean;
@@ -44,6 +43,7 @@ function SettingsContent() {
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showDisconnectDialog, setShowDisconnectDialog] = useState(false);
 
   // Date range for backfill
   const [startDate, setStartDate] = useState(() => {
@@ -157,24 +157,13 @@ function SettingsContent() {
   return (
     <div className="container mx-auto py-8 max-w-2xl">
       <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold">Settings</h1>
-        <div className="flex items-center gap-2">
-          <Select value="settings" onValueChange={(value) => router.push(`/${value}`)}>
-            <SelectTrigger className="w-[135px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="dashboard">Dashboard</SelectItem>
-              <SelectItem value="correlations">Correlations</SelectItem>
-              <SelectItem value="patterns">Patterns</SelectItem>
-              <SelectItem value="insights">Insights</SelectItem>
-            </SelectContent>
-          </Select>
-          <ThemeToggle />
-          <Button variant="outline" size="icon" disabled>
-            <SettingsIcon className="h-4 w-4" />
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="icon" onClick={() => router.back()}>
+            <ArrowLeft className="h-5 w-5" />
           </Button>
+          <h1 className="text-3xl font-bold">Settings</h1>
         </div>
+        <ThemeToggle />
       </div>
 
       {error && (
@@ -191,21 +180,30 @@ function SettingsContent() {
 
       {/* Connection Status */}
       <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            Oura Connection
-            {authStatus?.connected ? (
-              <Badge variant="default">Connected</Badge>
-            ) : (
-              <Badge variant="secondary">Not Connected</Badge>
-            )}
-          </CardTitle>
-          <CardDescription>
-            Connect your Oura Ring to sync your health data
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+        <CardHeader className="flex flex-row items-start justify-between space-y-0">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              Oura Connection
+              {authStatus?.connected ? (
+                <Badge variant="default">Connected</Badge>
+              ) : (
+                <Badge variant="secondary">Not Connected</Badge>
+              )}
+            </CardTitle>
+            <CardDescription className="mt-1.5">
+              Connect your Oura Ring to sync your health data
+            </CardDescription>
+          </div>
           {authStatus?.connected ? (
+            <Button variant="destructive" size="sm" onClick={() => setShowDisconnectDialog(true)}>
+              Disconnect
+            </Button>
+          ) : (
+            <Button size="sm" onClick={handleConnect}>Connect Oura</Button>
+          )}
+        </CardHeader>
+        {authStatus?.connected && (
+          <CardContent>
             <div className="space-y-4">
               {authStatus.expiresAt && (
                 <p className="text-sm text-muted-foreground">
@@ -224,24 +222,24 @@ function SettingsContent() {
                   </div>
                 </div>
               )}
-              <Button variant="destructive" onClick={handleDisconnect}>
-                Disconnect
-              </Button>
             </div>
-          ) : (
-            <Button onClick={handleConnect}>Connect Oura</Button>
-          )}
-        </CardContent>
+          </CardContent>
+        )}
       </Card>
 
       {/* Data Sync */}
       {authStatus?.connected && (
         <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>Data Sync</CardTitle>
-            <CardDescription>
-              Fetch and process your Oura data for analysis
-            </CardDescription>
+          <CardHeader className="flex flex-row items-start justify-between space-y-0">
+            <div>
+              <CardTitle>Data Sync</CardTitle>
+              <CardDescription className="mt-1.5">
+                Fetch and process your Oura data for analysis
+              </CardDescription>
+            </div>
+            <Button size="sm" onClick={handleSync} disabled={syncing}>
+              {syncing ? "Syncing..." : "Sync"}
+            </Button>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
@@ -268,13 +266,28 @@ function SettingsContent() {
                 />
               </div>
             </div>
-            <Button onClick={handleSync} disabled={syncing}>
-              {syncing ? "Syncing..." : "Sync Data"}
-            </Button>
           </CardContent>
         </Card>
       )}
 
+      <Dialog open={showDisconnectDialog} onOpenChange={setShowDisconnectDialog}>
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Disconnect Oura?</DialogTitle>
+            <DialogDescription>
+              This will revoke access to your Oura Ring data. You can reconnect at any time.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDisconnectDialog(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => { setShowDisconnectDialog(false); handleDisconnect(); }}>
+              Disconnect
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

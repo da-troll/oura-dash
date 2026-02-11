@@ -12,6 +12,10 @@ import {
   ResponsiveContainer,
   Cell,
   ReferenceLine,
+  ComposedChart,
+  Scatter,
+  ScatterChart,
+  ZAxis,
 } from "recharts";
 
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -73,6 +77,54 @@ interface ControlledResult {
   controlled_for: string[];
 }
 
+interface MatrixData {
+  metrics: string[];
+  matrix: number[][];
+  p_values: number[][];
+  n_matrix: number[][];
+}
+
+interface ScatterPointData {
+  x: number;
+  y: number;
+  date: string;
+}
+
+interface ScatterData {
+  metric_x: string;
+  metric_y: string;
+  points: ScatterPointData[];
+  n: number;
+}
+
+type SpearmanView = "lollipop" | "diverging" | "heatmap" | "scatter";
+
+function getCorrelationColor(rho: number): string {
+  // Stops: -1.0 → #7c3aed, -0.5 → #a78bfa, 0.0 → #9ca3af, +0.5 → #5eead4, +1.0 → #14b8a6
+  const stops: [number, [number, number, number]][] = [
+    [-1.0, [124, 58, 237]],
+    [-0.5, [167, 139, 250]],
+    [0.0, [156, 163, 175]],
+    [0.5, [94, 234, 212]],
+    [1.0, [20, 184, 166]],
+  ];
+
+  const clamped = Math.max(-1, Math.min(1, rho));
+
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [t0, c0] = stops[i];
+    const [t1, c1] = stops[i + 1];
+    if (clamped >= t0 && clamped <= t1) {
+      const t = (clamped - t0) / (t1 - t0);
+      const r = Math.round(c0[0] + t * (c1[0] - c0[0]));
+      const g = Math.round(c0[1] + t * (c1[1] - c0[1]));
+      const b = Math.round(c0[2] + t * (c1[2] - c0[2]));
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+  }
+  return "#9ca3af";
+}
+
 export default function CorrelationsPage() {
   const router = useRouter();
   // Spearman state
@@ -85,6 +137,16 @@ export default function CorrelationsPage() {
   ]);
   const [spearmanResults, setSpearmanResults] = useState<SpearmanCorrelation[] | null>(null);
   const [spearmanLoading, setSpearmanLoading] = useState(false);
+  const [spearmanView, setSpearmanView] = useState<SpearmanView>("lollipop");
+
+  // Matrix state (heatmap)
+  const [matrixData, setMatrixData] = useState<MatrixData | null>(null);
+  const [matrixLoading, setMatrixLoading] = useState(false);
+
+  // Scatter state
+  const [scatterData, setScatterData] = useState<ScatterData | null>(null);
+  const [scatterLoading, setScatterLoading] = useState(false);
+  const [selectedScatterMetric, setSelectedScatterMetric] = useState<string | null>(null);
 
   // Lagged state
   const [laggedX, setLaggedX] = useState("steps");
@@ -125,6 +187,60 @@ export default function CorrelationsPage() {
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
       setSpearmanLoading(false);
+    }
+  };
+
+  const fetchMatrix = async () => {
+    setMatrixLoading(true);
+    setError(null);
+    try {
+      const allMetrics = [spearmanTarget, ...spearmanCandidates];
+      const params = new URLSearchParams();
+      allMetrics.forEach((m) => params.append("metrics", m));
+
+      const response = await fetch(`${apiUrl}/analyze/correlations/matrix?${params}`, {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error("Failed to fetch correlation matrix");
+      const data = await response.json();
+      setMatrixData(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setMatrixLoading(false);
+    }
+  };
+
+  const fetchScatterData = async (metric: string) => {
+    setScatterLoading(true);
+    setSelectedScatterMetric(metric);
+    setError(null);
+    try {
+      const params = new URLSearchParams({
+        metric_x: metric,
+        metric_y: spearmanTarget,
+      });
+
+      const response = await fetch(`${apiUrl}/analyze/correlations/scatter-data?${params}`, {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error("Failed to fetch scatter data");
+      const data = await response.json();
+      setScatterData(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setScatterLoading(false);
+    }
+  };
+
+  const handleViewChange = (view: SpearmanView) => {
+    setSpearmanView(view);
+    if (view === "heatmap" && !matrixData) {
+      fetchMatrix();
+    }
+    if (view === "scatter" && !selectedScatterMetric && spearmanResults && spearmanResults.length > 0) {
+      fetchScatterData(spearmanResults[0].metric);
     }
   };
 
@@ -188,18 +304,338 @@ export default function CorrelationsPage() {
   const getMetricLabel = (value: string) =>
     AVAILABLE_METRICS.find((m) => m.value === value)?.label || value;
 
-  const getCorrelationColor = (rho: number) => {
-    if (rho > 0.5) return "#16a34a";
-    if (rho > 0.3) return "#65a30d";
-    if (rho > 0) return "#84cc16";
-    if (rho > -0.3) return "#f97316";
-    if (rho > -0.5) return "#ea580c";
-    return "#dc2626";
-  };
-
   const formatPValue = (p: number) => {
     if (p < 0.001) return "< 0.001";
     return p.toFixed(3);
+  };
+
+  // Compute linear regression for scatter trend line
+  const computeTrendLine = (points: ScatterPointData[]) => {
+    if (points.length < 2) return null;
+    const n = points.length;
+    const sumX = points.reduce((s, p) => s + p.x, 0);
+    const sumY = points.reduce((s, p) => s + p.y, 0);
+    const sumXY = points.reduce((s, p) => s + p.x * p.y, 0);
+    const sumX2 = points.reduce((s, p) => s + p.x * p.x, 0);
+    const denom = n * sumX2 - sumX * sumX;
+    if (denom === 0) return null;
+    const slope = (n * sumXY - sumX * sumY) / denom;
+    const intercept = (sumY - slope * sumX) / n;
+    const minX = Math.min(...points.map((p) => p.x));
+    const maxX = Math.max(...points.map((p) => p.x));
+    return [
+      { x: minX, y: slope * minX + intercept },
+      { x: maxX, y: slope * maxX + intercept },
+    ];
+  };
+
+  // Prepare sorted data for charts
+  const getSortedChartData = () => {
+    if (!spearmanResults) return [];
+    return spearmanResults
+      .map((r) => ({
+        metric: getMetricLabel(r.metric),
+        rawMetric: r.metric,
+        rho: r.rho,
+        p_value: r.p_value,
+        n: r.n,
+      }))
+      .sort((a, b) => Math.abs(b.rho) - Math.abs(a.rho));
+  };
+
+  const viewLabels: { key: SpearmanView; label: string }[] = [
+    { key: "lollipop", label: "Lollipop" },
+    { key: "diverging", label: "Diverging" },
+    { key: "heatmap", label: "Heatmap" },
+    { key: "scatter", label: "Scatter" },
+  ];
+
+  const renderSpearmanChart = () => {
+    if (!spearmanResults) return null;
+
+    const chartData = getSortedChartData();
+    const chartHeight = Math.max(300, chartData.length * 40);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const customTooltip = ({ active, payload }: any) => {
+      if (active && payload && payload.length) {
+        const data = payload[0].payload;
+        return (
+          <div className="rounded-lg border bg-background p-3 shadow-lg">
+            <div className="grid gap-2">
+              <p className="text-sm font-bold">{data.metric}</p>
+              <div className="space-y-1">
+                <p className="text-sm">
+                  <span className="font-medium">rho =</span> {data.rho.toFixed(3)}
+                </p>
+                <p className="text-sm">
+                  <span className="font-medium">p =</span> {formatPValue(data.p_value)}
+                </p>
+                <p className="text-sm">
+                  <span className="font-medium">n =</span> {data.n}
+                </p>
+              </div>
+            </div>
+          </div>
+        );
+      }
+      return null;
+    };
+
+    switch (spearmanView) {
+      case "lollipop":
+        return (
+          <div>
+            <div style={{ height: chartHeight }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart
+                  data={chartData}
+                  layout="vertical"
+                  margin={{ left: 120 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" horizontal={false} />
+                  <XAxis type="number" domain={[-1, 1]} />
+                  <YAxis type="category" dataKey="metric" tick={{ fontSize: 12 }} width={110} />
+                  <Tooltip content={customTooltip} />
+                  <ReferenceLine x={0} stroke="#888" />
+                  <Bar dataKey="rho" barSize={3}>
+                    {chartData.map((entry, index) => (
+                      <Cell key={index} fill={getCorrelationColor(entry.rho)} />
+                    ))}
+                  </Bar>
+                  <Scatter dataKey="rho" fill="#8884d8" shape="circle">
+                    {chartData.map((entry, index) => (
+                      <Cell key={index} fill={getCorrelationColor(entry.rho)} r={5} />
+                    ))}
+                  </Scatter>
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              Purple = negative, Teal = positive. Dot size shows strength.
+            </p>
+          </div>
+        );
+
+      case "diverging":
+        return (
+          <div>
+            <div style={{ height: chartHeight }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={[...chartData].sort((a, b) => a.rho - b.rho)}
+                  layout="vertical"
+                  margin={{ left: 120 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" horizontal={false} />
+                  <XAxis type="number" domain={[-1, 1]} />
+                  <YAxis type="category" dataKey="metric" tick={{ fontSize: 12 }} width={110} />
+                  <Tooltip content={customTooltip} />
+                  <ReferenceLine x={0} stroke="#888" />
+                  <Bar dataKey="rho" name="Correlation">
+                    {[...chartData].sort((a, b) => a.rho - b.rho).map((entry, index) => (
+                      <Cell key={index} fill={getCorrelationColor(entry.rho)} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              Sorted by correlation value. Purple = negative, Teal = positive.
+            </p>
+          </div>
+        );
+
+      case "heatmap":
+        return renderHeatmap();
+
+      case "scatter":
+        return renderScatterView();
+    }
+  };
+
+  const renderHeatmap = () => {
+    if (matrixLoading) {
+      return <p className="text-sm text-muted-foreground">Loading matrix...</p>;
+    }
+    if (!matrixData || matrixData.metrics.length === 0) {
+      return <p className="text-sm text-muted-foreground">No matrix data. Switch to heatmap view to load.</p>;
+    }
+
+    const { metrics, matrix, p_values, n_matrix } = matrixData;
+    const size = metrics.length;
+
+    const cellSize = 48;
+
+    return (
+      <div>
+        <div className="overflow-x-auto">
+          <div
+            className="inline-grid gap-[2px]"
+            style={{
+              gridTemplateColumns: `100px repeat(${size}, ${cellSize}px)`,
+            }}
+          >
+            {/* Header row */}
+            <div />
+            {metrics.map((m) => (
+              <div
+                key={`h-${m}`}
+                className="text-[10px] font-medium text-center truncate px-1"
+                style={{ writingMode: "vertical-rl", transform: "rotate(180deg)", height: 80 }}
+              >
+                {getMetricLabel(m)}
+              </div>
+            ))}
+
+            {/* Data rows */}
+            {metrics.flatMap((rowMetric, i) => [
+              <div key={`l-${rowMetric}`} className="text-xs font-medium flex items-center truncate pr-2">
+                {getMetricLabel(rowMetric)}
+              </div>,
+              ...metrics.map((_, j) => {
+                const rho = matrix[i][j];
+                const p = p_values[i][j];
+                const n = n_matrix[i][j];
+                return (
+                  <div
+                    key={`c-${i}-${j}`}
+                    className="flex items-center justify-center text-[10px] font-medium rounded-sm cursor-default"
+                    style={{
+                      backgroundColor: getCorrelationColor(rho),
+                      color: Math.abs(rho) > 0.4 ? "white" : "inherit",
+                      width: cellSize,
+                      height: cellSize,
+                    }}
+                    title={`${getMetricLabel(metrics[i])} vs ${getMetricLabel(metrics[j])}\nrho = ${rho.toFixed(3)}\np = ${formatPValue(p)}\nn = ${n}`}
+                  >
+                    {rho.toFixed(2)}
+                  </div>
+                );
+              }),
+            ])}
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground mt-2">
+          Hover cells for details. Purple = negative, Grey = near zero, Teal = positive.
+        </p>
+      </div>
+    );
+  };
+
+  const renderScatterView = () => {
+    if (!spearmanResults) return null;
+
+    const sortedMetrics = [...spearmanResults].sort(
+      (a, b) => Math.abs(b.rho) - Math.abs(a.rho)
+    );
+
+    return (
+      <div className="grid grid-cols-3 gap-4">
+        {/* Left column: metric list */}
+        <div className="col-span-1 space-y-1 max-h-[400px] overflow-y-auto">
+          <p className="text-xs font-medium text-muted-foreground mb-2">Select metric</p>
+          {sortedMetrics.map((r) => (
+            <button
+              key={r.metric}
+              onClick={() => fetchScatterData(r.metric)}
+              className={`w-full text-left px-3 py-2 rounded text-sm transition-colors ${
+                selectedScatterMetric === r.metric
+                  ? "bg-primary text-primary-foreground"
+                  : "hover:bg-muted"
+              }`}
+            >
+              <div className="flex justify-between items-center">
+                <span className="truncate">{getMetricLabel(r.metric)}</span>
+                <span
+                  className="text-xs font-mono ml-2 shrink-0"
+                  style={{ color: selectedScatterMetric === r.metric ? "inherit" : getCorrelationColor(r.rho) }}
+                >
+                  {r.rho.toFixed(2)}
+                </span>
+              </div>
+            </button>
+          ))}
+        </div>
+
+        {/* Right column: scatter plot */}
+        <div className="col-span-2">
+          {scatterLoading && (
+            <p className="text-sm text-muted-foreground">Loading scatter data...</p>
+          )}
+          {!scatterLoading && scatterData && scatterData.points.length > 0 && (
+            <div>
+              <p className="text-sm font-medium mb-2">
+                {getMetricLabel(scatterData.metric_x)} vs {getMetricLabel(scatterData.metric_y)}
+                <span className="text-xs text-muted-foreground ml-2">({scatterData.n} points)</span>
+              </p>
+              <div className="h-[350px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ScatterChart margin={{ bottom: 20, left: 10, right: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis
+                      type="number"
+                      dataKey="x"
+                      name={getMetricLabel(scatterData.metric_x)}
+                      label={{ value: getMetricLabel(scatterData.metric_x), position: "bottom", offset: 0 }}
+                      tick={{ fontSize: 11 }}
+                    />
+                    <YAxis
+                      type="number"
+                      dataKey="y"
+                      name={getMetricLabel(scatterData.metric_y)}
+                      tick={{ fontSize: 11 }}
+                    />
+                    <ZAxis range={[20, 20]} />
+                    <Tooltip
+                      content={({ active, payload }) => {
+                        if (active && payload && payload.length) {
+                          const p = payload[0].payload as ScatterPointData;
+                          return (
+                            <div className="rounded-lg border bg-background p-3 shadow-lg">
+                              <p className="text-xs text-muted-foreground">{p.date}</p>
+                              <p className="text-sm">
+                                {getMetricLabel(scatterData.metric_x)}: {p.x.toFixed(1)}
+                              </p>
+                              <p className="text-sm">
+                                {getMetricLabel(scatterData.metric_y)}: {p.y.toFixed(1)}
+                              </p>
+                            </div>
+                          );
+                        }
+                        return null;
+                      }}
+                    />
+                    <Scatter data={scatterData.points} fill="#7c3aed" fillOpacity={0.5} />
+                    {(() => {
+                      const trendLine = computeTrendLine(scatterData.points);
+                      if (!trendLine) return null;
+                      return (
+                        <Scatter
+                          data={trendLine}
+                          fill="none"
+                          line={{ stroke: "#14b8a6", strokeWidth: 2 }}
+                          lineType="joint"
+                          shape={(props: Record<string, unknown>) => (
+                            <circle cx={props.cx as number} cy={props.cy as number} r={0} />
+                          )}
+                        />
+                      );
+                    })()}
+                  </ScatterChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+          {!scatterLoading && scatterData && scatterData.points.length === 0 && (
+            <p className="text-sm text-muted-foreground">No overlapping data for these metrics.</p>
+          )}
+          {!scatterLoading && !scatterData && (
+            <p className="text-sm text-muted-foreground">Select a metric to view scatter plot.</p>
+          )}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -287,64 +723,26 @@ export default function CorrelationsPage() {
 
               {spearmanResults && (
                 <div className="mt-6">
-                  <h4 className="text-sm font-medium mb-4">
-                    Correlations with {getMetricLabel(spearmanTarget)}
-                  </h4>
-                  <div className="h-[300px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart
-                        data={spearmanResults
-                          .map((r) => ({
-                            metric: getMetricLabel(r.metric),
-                            rho: r.rho,
-                            p_value: r.p_value,
-                            n: r.n,
-                          }))
-                          .sort((a, b) => Math.abs(b.rho) - Math.abs(a.rho))}
-                        layout="vertical"
-                        margin={{ left: 120 }}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                        <XAxis type="number" domain={[-1, 1]} />
-                        <YAxis type="category" dataKey="metric" tick={{ fontSize: 12 }} width={110} />
-                        <Tooltip
-                          content={({ active, payload }) => {
-                            if (active && payload && payload.length) {
-                              const data = payload[0].payload;
-                              return (
-                                <div className="rounded-lg border bg-background p-3 shadow-lg">
-                                  <div className="grid gap-2">
-                                    <p className="text-sm font-bold">{data.metric}</p>
-                                    <div className="space-y-1">
-                                      <p className="text-sm">
-                                        <span className="font-medium">ρ =</span> {data.rho.toFixed(3)}
-                                      </p>
-                                      <p className="text-sm">
-                                        <span className="font-medium">p =</span> {formatPValue(data.p_value)}
-                                      </p>
-                                      <p className="text-sm">
-                                        <span className="font-medium">n =</span> {data.n}
-                                      </p>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            }
-                            return null;
-                          }}
-                        />
-                        <ReferenceLine x={0} stroke="#888" />
-                        <Bar dataKey="rho" name="Correlation">
-                          {spearmanResults.map((entry, index) => (
-                            <Cell key={index} fill={getCorrelationColor(entry.rho)} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="text-sm font-medium">
+                      Correlations with {getMetricLabel(spearmanTarget)}
+                    </h4>
+                    <div className="flex gap-1">
+                      {viewLabels.map((v) => (
+                        <Button
+                          key={v.key}
+                          variant={spearmanView === v.key ? "default" : "outline"}
+                          size="sm"
+                          className="text-xs h-7 px-2"
+                          onClick={() => handleViewChange(v.key)}
+                        >
+                          {v.label}
+                        </Button>
+                      ))}
+                    </div>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-2">
-                    Green = positive correlation, Orange/Red = negative correlation. Stronger colors = stronger correlation.
-                  </p>
+
+                  {renderSpearmanChart()}
                 </div>
               )}
             </CardContent>
@@ -435,7 +833,7 @@ export default function CorrelationsPage() {
                                     <p className="text-sm font-bold">Lag: {data.lag} days</p>
                                     <div className="space-y-1">
                                       <p className="text-sm">
-                                        <span className="font-medium">ρ =</span> {data.rho.toFixed(3)}
+                                        <span className="font-medium">rho =</span> {data.rho.toFixed(3)}
                                       </p>
                                       <p className="text-sm">
                                         <span className="font-medium">p =</span> {formatPValue(data.p_value)}
@@ -544,7 +942,7 @@ export default function CorrelationsPage() {
                   <h4 className="text-lg font-medium mb-4">Result</h4>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <p className="text-sm text-muted-foreground">Correlation (ρ)</p>
+                      <p className="text-sm text-muted-foreground">Correlation (rho)</p>
                       <p
                         className="text-2xl font-bold"
                         style={{ color: getCorrelationColor(controlledResult.rho) }}
@@ -578,7 +976,7 @@ export default function CorrelationsPage() {
                     Sample size: {controlledResult.n} days.{" "}
                     {controlledResult.p_value < 0.05
                       ? "Statistically significant (p < 0.05)"
-                      : "Not statistically significant (p ≥ 0.05)"}
+                      : "Not statistically significant (p >= 0.05)"}
                   </p>
                 </div>
               )}

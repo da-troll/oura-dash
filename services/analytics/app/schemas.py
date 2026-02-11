@@ -109,6 +109,32 @@ class SpearmanResponse(BaseModel):
     correlations: list[SpearmanCorrelation]
 
 
+class CorrelationMatrixResponse(BaseModel):
+    """Pairwise correlation matrix response."""
+
+    metrics: list[str]
+    matrix: list[list[float]]
+    p_values: list[list[float]]
+    n_matrix: list[list[int]]
+
+
+class ScatterPoint(BaseModel):
+    """Single point in a scatter plot."""
+
+    x: float
+    y: float
+    date: str
+
+
+class ScatterDataResponse(BaseModel):
+    """Scatter data response for two metrics."""
+
+    metric_x: str
+    metric_y: str
+    points: list[ScatterPoint]
+    n: int
+
+
 class LaggedCorrelationPoint(BaseModel):
     """Correlation at a specific lag."""
 
@@ -276,6 +302,10 @@ class DashboardSummary(BaseModel):
     rhr_avg: float | None = None
     sleep_hours_avg: float | None = None
     calories_avg: float | None = None
+    stress_avg: float | None = None
+    recovery_avg: float | None = None
+    spo2_avg: float | None = None
+    workout_minutes_avg: float | None = None
     days_with_data: int = 0
 
 
@@ -352,6 +382,22 @@ class ChronotypeResponse(BaseModel):
     social_jetlag_minutes: int | None
     social_jetlag_label: str  # Human-readable (e.g., "1h 15m")
     recommendation: str | None
+
+
+# ============================================
+# Personal Info
+# ============================================
+
+
+class PersonalInfoResponse(BaseModel):
+    """Personal info response."""
+
+    age: int | None = None
+    weight: float | None = None
+    height: float | None = None
+    biological_sex: str | None = None
+    email: str | None = None
+    fetched_at: datetime | None = None
 
 
 # ============================================
