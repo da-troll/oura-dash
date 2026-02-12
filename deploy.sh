@@ -10,11 +10,11 @@ echo "Pulling latest code..."
 git pull origin main
 
 echo "Building and starting services..."
-docker compose -f docker-compose.prod.yml build
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml --env-file .env.prod build
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 
 echo "Running database migrations..."
-docker compose -f docker-compose.prod.yml exec analytics uv run python -c "
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec analytics uv run python -c "
 import asyncio
 from app.db import get_db
 
@@ -52,4 +52,4 @@ asyncio.run(migrate())
 
 echo ""
 echo "Deployed! Check https://oura.trollefsen.com"
-docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml --env-file .env.prod ps
