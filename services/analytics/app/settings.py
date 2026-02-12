@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     oura_auth_url: str = "https://cloud.ouraring.com/oauth/authorize"
     oura_token_url: str = "https://api.ouraring.com/oauth/token"
 
+    # CORS
+    cors_origins: str = "http://localhost:3000"
+
     # Scopes for Oura API
     oura_scopes: str = "daily heartrate tag session workout personal spo2 heart_health"
 

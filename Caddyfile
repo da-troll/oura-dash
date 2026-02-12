@@ -1,0 +1,12 @@
+oura.trollefsen.com {
+	# Proxy browser API calls to the analytics backend
+	handle /api/analytics/* {
+		uri strip_prefix /api/analytics
+		reverse_proxy analytics:8001
+	}
+
+	# Everything else goes to Next.js
+	handle {
+		reverse_proxy web:3000
+	}
+}

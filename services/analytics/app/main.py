@@ -10,6 +10,7 @@ from app.analysis import correlations, patterns
 from app.oura import auth as oura_auth
 from app.pipelines import features, ingest
 from app.db import get_db
+from app.settings import settings
 from app.schemas import (
     AnomalyResponse,
     AuthStatusResponse,
@@ -53,10 +54,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware for local development
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[o.strip() for o in settings.cors_origins.split(",")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

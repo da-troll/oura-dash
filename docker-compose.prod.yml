@@ -1,0 +1,61 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - analytics
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-oura}
+    volumes:
+      - oura_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  analytics:
+    build: ./services/analytics
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-oura}
+      OURA_CLIENT_ID: ${OURA_CLIENT_ID}
+      OURA_CLIENT_SECRET: ${OURA_CLIENT_SECRET}
+      OURA_REDIRECT_URI: https://oura.trollefsen.com/api/oura/callback
+      CORS_ORIGINS: https://oura.trollefsen.com
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        - NEXT_PUBLIC_ANALYTICS_URL=/api/analytics
+    restart: unless-stopped
+    environment:
+      ANALYTICS_BASE_URL: http://analytics:8001
+      OURA_CLIENT_ID: ${OURA_CLIENT_ID}
+      OURA_REDIRECT_URI: https://oura.trollefsen.com/api/oura/callback
+      NEXT_PUBLIC_BASE_URL: https://oura.trollefsen.com
+    depends_on:
+      - analytics
+
+volumes:
+  oura_pg:
+  caddy_data:
+  caddy_config:
