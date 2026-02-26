@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
 
 from app.settings import settings
@@ -40,7 +41,9 @@ async def get_db_for_user(user_id: str):
     ) as conn:
         async with conn.transaction():
             await conn.execute(
-                "SET LOCAL app.current_user_id = %s", (str(user_id),)
+                sql.SQL("SET LOCAL app.current_user_id = {}").format(
+                    sql.Literal(str(user_id))
+                )
             )
             yield conn
 

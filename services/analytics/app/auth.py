@@ -1,7 +1,9 @@
 """User authentication: registration, login, session management."""
 
+import asyncio
 import hashlib
 import secrets
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
@@ -9,6 +11,47 @@ from argon2.exceptions import VerifyMismatchError
 
 from app.db import get_db_system
 from app.settings import settings
+
+
+class LoginRateLimiter:
+    """In-memory sliding-window rate limiter for login attempts.
+
+    Per-process only — resets on restart, not shared across workers.
+    Acceptable for single-process uvicorn deployment.
+    """
+
+    def __init__(self, max_attempts: int = 10, window_seconds: int = 60):
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self._attempts: dict[str, deque[float]] = {}
+        self._lock = asyncio.Lock()
+
+    async def check(self, key: str) -> bool:
+        """Check if the key is rate-limited. Returns True if allowed, False if blocked."""
+        now = datetime.now(timezone.utc).timestamp()
+        cutoff = now - self.window_seconds
+
+        async with self._lock:
+            if key not in self._attempts:
+                self._attempts[key] = deque()
+
+            window = self._attempts[key]
+
+            # Evict expired timestamps
+            while window and window[0] < cutoff:
+                window.popleft()
+
+            if len(window) >= self.max_attempts:
+                return False
+
+            window.append(now)
+
+            # Prune stale keys periodically (every check, cheap operation)
+            stale_keys = [k for k, v in self._attempts.items() if not v]
+            for k in stale_keys:
+                del self._attempts[k]
+
+            return True
 
 ph = PasswordHasher()
 

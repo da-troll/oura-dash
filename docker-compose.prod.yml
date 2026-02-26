@@ -37,6 +37,11 @@ services:
       OURA_CLIENT_SECRET: ${OURA_CLIENT_SECRET}
       OURA_REDIRECT_URI: https://oura.trollefsen.com/api/oura/callback
       CORS_ORIGINS: https://oura.trollefsen.com
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}
+      ENABLE_AUTO_MIGRATE: ${ENABLE_AUTO_MIGRATE:-false}
+      EXPECTED_DB_ROLE: ${EXPECTED_DB_ROLE:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CHAT_ENABLED: ${CHAT_ENABLED:-false}
     depends_on:
       db:
         condition: service_healthy

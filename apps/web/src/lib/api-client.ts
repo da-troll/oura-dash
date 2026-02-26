@@ -123,12 +123,13 @@ export async function getAuthUrl(token: string): Promise<AuthUrlResponse> {
 
 export async function exchangeCode(
   code: string,
-  token: string
+  token: string,
+  state?: string
 ): Promise<ExchangeCodeResponse> {
   return analyticsApi<ExchangeCodeResponse>("/auth/oura/exchange", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, state }),
   });
 }
 

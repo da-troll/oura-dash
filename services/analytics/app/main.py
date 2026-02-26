@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from app.analysis import correlations, patterns
 from app.auth import (
+    LoginRateLimiter,
     authenticate_user,
     cleanup_expired_sessions,
     create_session,
@@ -118,12 +119,44 @@ async def periodic_cleanup():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
+    # Validate TOKEN_ENCRYPTION_KEY is set and is a valid Fernet key
+    if not settings.token_encryption_key:
+        raise RuntimeError(
+            "TOKEN_ENCRYPTION_KEY is not set. "
+            "Generate one with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        )
+    try:
+        from cryptography.fernet import Fernet
+        Fernet(settings.token_encryption_key.encode())
+    except Exception as e:
+        raise RuntimeError(f"TOKEN_ENCRYPTION_KEY is not a valid Fernet key: {e}") from e
+
     await run_migrations()
+
+    # Runtime DB-role guard
+    if settings.expected_db_role:
+        async with get_db_system() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT current_user")
+                row = await cur.fetchone()
+                actual_role = row["current_user"]
+                if actual_role != settings.expected_db_role:
+                    raise RuntimeError(
+                        f"DB role mismatch: expected '{settings.expected_db_role}', "
+                        f"got '{actual_role}'. Check DATABASE_URL credentials."
+                    )
+        logger.info("DB role guard passed: connected as '%s'", settings.expected_db_role)
+
     # Start periodic cleanup task
     cleanup_task = asyncio.create_task(periodic_cleanup())
     yield
     cleanup_task.cancel()
 
+
+login_rate_limiter = LoginRateLimiter(
+    max_attempts=settings.login_rate_limit_per_minute,
+    window_seconds=60,
+)
 
 app = FastAPI(
     title="Oura Analytics",
@@ -184,6 +217,13 @@ async def register(body: RegisterRequest, request: Request):
 @app.post("/auth/login", response_model=AuthResponse)
 async def login(body: LoginRequest, request: Request):
     """Login with email and password."""
+    ip = request.client.host if request.client else "unknown"
+    if not await login_rate_limiter.check(ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts. Please try again later.",
+        )
+
     user = await authenticate_user(body.email, body.password)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -203,8 +243,8 @@ async def login(body: LoginRequest, request: Request):
 
 
 @app.post("/auth/logout")
-async def logout(request: Request):
-    """Logout (delete session)."""
+async def logout(request: Request, user: dict = Depends(get_current_user)):
+    """Logout (delete session). Requires valid Bearer token."""
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
@@ -365,6 +405,14 @@ async def exchange_code(
     user: dict = Depends(get_current_user),
 ) -> ExchangeCodeResponse:
     """Exchange OAuth authorization code for tokens."""
+    # Validate and consume the OAuth state (single-use, user-bound)
+    state_valid = await oura_auth.consume_oauth_state(request.state, user["user_id"])
+    if not state_valid:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired OAuth state. Please restart the authorization flow.",
+        )
+
     try:
         tokens = await oura_auth.exchange_code(request.code)
         await oura_auth.store_tokens(tokens, user["user_id"])
@@ -652,42 +700,51 @@ async def get_heatmap(
     """Get annual heatmap data for a metric."""
     user_id = user["user_id"]
 
+    # Map friendly metric names to actual SQL column expressions
+    metric_map = {
+        "readiness_score": "readiness_score",
+        "sleep_score": "sleep_score",
+        "activity_score": "activity_score",
+        "steps": "steps",
+        "hrv_average": "hrv_average",
+        "hr_lowest": "hr_lowest",
+        "sleep_total_seconds": "sleep_total_seconds / 3600.0",
+        "sleep_efficiency": "sleep_efficiency",
+        "sleep_deep_seconds": "sleep_deep_seconds / 3600.0",
+        "sleep_rem_seconds": "sleep_rem_seconds / 3600.0",
+        "cal_total": "cal_total",
+        "cal_active": "cal_active",
+        "stress_high_minutes": "stress_high_minutes",
+        "recovery_high_minutes": "recovery_high_minutes",
+        "spo2_average": "spo2_average",
+        "vascular_age": "vascular_age",
+        "workout_total_minutes": "workout_total_minutes",
+        "workout_count": "workout_count",
+        "sleep_breath_average": "sleep_breath_average",
+    }
+
+    if metric not in metric_map:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid metric '{metric}'. Must be one of: {', '.join(sorted(metric_map))}",
+        )
+
+    if not (1 <= days <= 3660):
+        raise HTTPException(status_code=400, detail="days must be between 1 and 3660")
+
+    column = metric_map[metric]
+
     async with get_db_for_user(user_id) as conn:
         async with conn.cursor() as cur:
-            # Map friendly metric names to actual columns
-            metric_map = {
-                "readiness_score": "readiness_score",
-                "sleep_score": "sleep_score",
-                "activity_score": "activity_score",
-                "steps": "steps",
-                "hrv_average": "hrv_average",
-                "hr_lowest": "hr_lowest",
-                "sleep_total_seconds": "sleep_total_seconds / 3600.0",
-                "sleep_efficiency": "sleep_efficiency",
-                "sleep_deep_seconds": "sleep_deep_seconds / 3600.0",
-                "sleep_rem_seconds": "sleep_rem_seconds / 3600.0",
-                "cal_total": "cal_total",
-                "cal_active": "cal_active",
-                "stress_high_minutes": "stress_high_minutes",
-                "recovery_high_minutes": "recovery_high_minutes",
-                "spo2_average": "spo2_average",
-                "vascular_age": "vascular_age",
-                "workout_total_minutes": "workout_total_minutes",
-                "workout_count": "workout_count",
-                "sleep_breath_average": "sleep_breath_average",
-            }
-
-            column = metric_map.get(metric, metric)
-
             await cur.execute(f"""
                 SELECT
                     date,
                     {column} as value
                 FROM oura_daily
-                WHERE date >= CURRENT_DATE - INTERVAL '{days} days'
+                WHERE date >= CURRENT_DATE - %(days)s * INTERVAL '1 day'
                 AND user_id = %(user_id)s
                 ORDER BY date
-            """, {"user_id": user_id})
+            """, {"user_id": user_id, "days": days})
             rows = await cur.fetchall()
 
             # Calculate min/max for color scaling
@@ -723,12 +780,12 @@ async def get_sleep_architecture(
                     sleep_deep_seconds,
                     sleep_rem_seconds
                 FROM oura_daily
-                WHERE date >= CURRENT_DATE - INTERVAL '%s days'
-                AND user_id = %s
+                WHERE date >= CURRENT_DATE - %(days)s * INTERVAL '1 day'
+                AND user_id = %(user_id)s
                 AND sleep_total_seconds IS NOT NULL
                 AND sleep_total_seconds > 0
                 ORDER BY date
-            """, (days, user_id))
+            """, {"days": days, "user_id": user_id})
             rows = await cur.fetchall()
 
     data = []

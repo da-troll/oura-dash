@@ -14,13 +14,17 @@ async def _create_two_users(client):
 
 async def _insert_daily_data(db_conn, user_id: str, date_str: str, sleep_score: int):
     """Insert a row into oura_daily for a given user."""
+    from datetime import date as dt_date
+    d = dt_date.fromisoformat(date_str)
+    weekday = d.weekday()  # 0=Monday, 6=Sunday
+    is_weekend = weekday >= 5
     await db_conn.execute(
         """
-        INSERT INTO oura_daily (user_id, date, sleep_score, readiness_score, activity_score, steps)
-        VALUES (%s, %s, %s, 80, 75, 5000)
+        INSERT INTO oura_daily (user_id, date, sleep_score, readiness_score, activity_score, steps, weekday, is_weekend)
+        VALUES (%s, %s, %s, 80, 75, 5000, %s, %s)
         ON CONFLICT (user_id, date) DO UPDATE SET sleep_score = EXCLUDED.sleep_score
         """,
-        (user_id, date_str, sleep_score),
+        (user_id, date_str, sleep_score, weekday, is_weekend),
     )
     await db_conn.commit()
 
@@ -109,3 +113,35 @@ async def test_rls_blocks_unset_user_id(db_conn):
     # RLS with unset user_id should return empty (or raise error depending on config)
     # The key assertion: no rows leak through
     assert len(rows) == 0 or rows is not None  # Just verify no exception and no unexpected data
+
+
+# ============================================
+# Regression tests for security fixes
+# ============================================
+
+
+async def test_heatmap_invalid_metric_returns_400(client):
+    """Heatmap with invalid metric should return 400, not SQL injection."""
+    user = await register_and_login(client, "heatmap_inject@example.com", "password123")
+    res = await client.get(
+        "/insights/heatmap?metric=DROP_TABLE&days=365",
+        headers=auth_headers(user["token"]),
+    )
+    assert res.status_code == 400
+    assert "Invalid metric" in res.json()["detail"]
+
+
+async def test_oauth_state_replay_rejected(client):
+    """OAuth state should be rejected on replay (second use)."""
+    from app.oura.auth import consume_oauth_state, get_auth_url
+
+    user = await register_and_login(client, "replay@example.com", "password123")
+
+    # Generate state
+    _, state = await get_auth_url(user["user_id"])
+
+    # First consume succeeds
+    assert await consume_oauth_state(state, user["user_id"]) is True
+
+    # Replay is rejected
+    assert await consume_oauth_state(state, user["user_id"]) is False

@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # Scopes for Oura API
     oura_scopes: str = "daily heartrate tag session workout personal spo2 heart_health"
 
+    # Runtime DB-role guard (set to "app_user" in prod to verify connection role)
+    expected_db_role: str = ""
+
     # OpenAI (chat agent)
     openai_api_key: str = ""
     chat_enabled: bool = False

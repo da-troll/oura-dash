@@ -38,8 +38,8 @@ async def test_rls_fail_closed_without_user_id(db_conn):
     )
     await db_conn.execute(
         """
-        INSERT INTO oura_daily (user_id, date, sleep_score)
-        VALUES ('00000000-0000-0000-0000-000000000001', '2025-01-15', 85)
+        INSERT INTO oura_daily (user_id, date, sleep_score, weekday, is_weekend)
+        VALUES ('00000000-0000-0000-0000-000000000001', '2025-01-15', 85, 2, false)
         ON CONFLICT (user_id, date) DO NOTHING
         """,
     )
@@ -68,7 +68,7 @@ async def test_sequential_requests_no_context_leak(client, db_conn):
         (user_a["user_id"],),
     )
     await db_conn.execute(
-        "INSERT INTO oura_daily (user_id, date, sleep_score, readiness_score) VALUES (%s, '2025-03-01', 99, 88) ON CONFLICT DO NOTHING",
+        "INSERT INTO oura_daily (user_id, date, sleep_score, readiness_score, weekday, is_weekend) VALUES (%s, '2025-03-01', 99, 88, 5, true) ON CONFLICT DO NOTHING",
         (user_a["user_id"],),
     )
     await db_conn.commit()

@@ -23,7 +23,7 @@ All services run in Docker containers on an internal network. Only Caddy is expo
 ### Assumptions
 
 - **Domain**: `oura.trollefsen.com` is hardcoded in `docker-compose.prod.yml`, `Caddyfile`, and several environment variables. If you want a different domain, search-and-replace all occurrences.
-- **Single user**: The app stores one set of Oura OAuth tokens. There are no user accounts or multi-tenancy.
+- **Multi-user**: The app supports multiple user accounts with email/password registration, session management, and per-user Oura OAuth tokens.
 - **VPS OS**: Ubuntu/Debian-based. Commands below use `apt`. Adjust for other distros.
 - **VPS resources**: Minimum 1 GB RAM, 1 vCPU. The app is lightweight but the Docker build step needs ~1 GB free RAM.
 - **Ports 80 and 443**: Must be open and not used by another web server (Apache, nginx, etc.). Caddy needs both for HTTPS certificate issuance.
@@ -90,6 +90,48 @@ sudo ufw status
 
 ---
 
+## Database Options
+
+### Option A: Local Docker PostgreSQL (default)
+
+The `docker-compose.prod.yml` includes a PostgreSQL container. This is the simplest option — just set `POSTGRES_PASSWORD` and everything runs locally.
+
+### Option B: Supabase Cloud
+
+If you prefer a managed database:
+
+1. **Create a Supabase project** at [supabase.com](https://supabase.com)
+2. Go to **Settings → Database → Connection string → Session pooler** (port 5432)
+3. Copy the connection string and set it as `DATABASE_URL` in `.env.prod`
+4. Go to **SQL Editor** and paste/run each migration file in order:
+   - `services/analytics/migrations/003_multi_user.sql`
+   - `services/analytics/migrations/004_chat_history.sql`
+   - `services/analytics/migrations/005_fix_chat_trigger.sql`
+5. (Optional) Create an `app_user` role with restricted grants and set `EXPECTED_DB_ROLE=app_user`
+6. Remove the `db` service from `docker-compose.prod.yml` and update `DATABASE_URL` to point to Supabase
+
+> When using Supabase, set `ENABLE_AUTO_MIGRATE=false` and run migrations manually via the SQL Editor.
+
+---
+
+## Generating a Fernet Key
+
+The `TOKEN_ENCRYPTION_KEY` is **required** — it encrypts Oura OAuth tokens at rest in the database. Generate one with:
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Or if you don't have Python locally, generate it on the VPS after cloning:
+
+```bash
+docker run --rm python:3.11-slim python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+**Keep this key safe.** If you lose it, stored Oura tokens become unreadable and users will need to re-authorize.
+
+---
+
 ## Setup
 
 ### 1. Clone the repository
@@ -122,9 +164,15 @@ POSTGRES_DB=oura
 # Oura OAuth (from step 3 above)
 OURA_CLIENT_ID=<YOUR_CLIENT_ID>
 OURA_CLIENT_SECRET=<YOUR_CLIENT_SECRET>
+
+# Token encryption (REQUIRED)
+TOKEN_ENCRYPTION_KEY=<YOUR_FERNET_KEY>
+
+# Migration (set true for first deploy, then switch to false)
+ENABLE_AUTO_MIGRATE=true
 ```
 
-Generate a secure password:
+Generate a secure database password:
 
 ```bash
 openssl rand -base64 32
@@ -161,19 +209,29 @@ curl https://oura.trollefsen.com/api/analytics/health
 # Should return: {"ok":true}
 ```
 
-Open `https://oura.trollefsen.com` in your browser. You should see the dashboard.
+Open `https://oura.trollefsen.com` in your browser.
 
 ---
 
-## Initial data setup
+## First-Run Flow
 
-After the first deploy, the database is empty. You need to:
+After the first deploy:
 
-1. **Connect your Oura account**: Go to `https://oura.trollefsen.com/settings` and click the connect button. This initiates OAuth and stores your tokens.
+1. **Register an account**: Go to `https://oura.trollefsen.com` and create a new account with email and password.
+2. **Login**: Login with your credentials.
+3. **Connect your Oura account**: Go to Settings and click the connect button. This initiates OAuth and stores your encrypted tokens.
+4. **Ingest data**: On the settings page, set a date range and trigger a sync. This fetches data from the Oura API and populates the database.
+5. **Compute features**: After ingestion, trigger the feature engineering pipeline from the settings page. This creates rolling averages, deltas, and other derived metrics.
 
-2. **Ingest data**: On the same settings page, set a date range and trigger a sync. This fetches data from the Oura API and populates the database.
+---
 
-3. **Compute features**: After ingestion, trigger the feature engineering pipeline from the settings page. This creates rolling averages, deltas, and other derived metrics.
+## Enabling Chat
+
+The AI chat agent is an optional feature that lets users ask natural-language questions about their health data.
+
+1. Set `CHAT_ENABLED=true` in `.env.prod`
+2. Set `OPENAI_API_KEY=sk-...` in `.env.prod`
+3. Redeploy or restart the analytics service
 
 ---
 
@@ -246,6 +304,11 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod exec analytics \
 | `POSTGRES_PASSWORD` | `.env.prod` | db, analytics | Database authentication |
 | `OURA_CLIENT_ID` | `.env.prod` | analytics, web | OAuth client identification |
 | `OURA_CLIENT_SECRET` | `.env.prod` | analytics | OAuth token exchange (server-side only) |
+| `TOKEN_ENCRYPTION_KEY` | `.env.prod` | analytics | Fernet key for encrypting Oura tokens at rest |
+| `ENABLE_AUTO_MIGRATE` | `.env.prod` | analytics | Run SQL migrations on startup (true/false) |
+| `EXPECTED_DB_ROLE` | `.env.prod` | analytics | Runtime DB role verification (optional) |
+| `OPENAI_API_KEY` | `.env.prod` | analytics | OpenAI API key for chat feature (optional) |
+| `CHAT_ENABLED` | `.env.prod` | analytics | Enable/disable chat feature (default false) |
 | `DATABASE_URL` | compose | analytics | Postgres connection string (constructed from POSTGRES_* vars) |
 | `OURA_REDIRECT_URI` | compose | analytics, web | OAuth callback URL (hardcoded to production domain) |
 | `CORS_ORIGINS` | compose | analytics | Allowed browser origins for API calls |
@@ -255,9 +318,11 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod exec analytics \
 
 ### Database migrations
 
-Migrations live in `services/analytics/migrations/` as numbered `.sql` files. The `deploy.sh` script tracks applied migrations in a `_migrations` table and runs any new ones in alphabetical order.
+Migrations live in `services/analytics/migrations/` as numbered `.sql` files. When `ENABLE_AUTO_MIGRATE=true`, the analytics service tracks applied migrations in a `_migrations` table and runs new ones in order on startup.
 
-> **Inference**: The migration runner was created as part of this deployment setup. It is simple and sequential. There is no rollback mechanism. If a migration fails, fix the SQL and re-run `deploy.sh` (it will retry the failed migration).
+For production with Supabase or manual migration management, set `ENABLE_AUTO_MIGRATE=false` and run migrations via SQL Editor or psql.
+
+> There is no rollback mechanism. If a migration fails, fix the SQL and re-run (it will retry the failed migration).
 
 ### TLS certificates
 
@@ -268,6 +333,12 @@ Caddy obtains and renews Let's Encrypt certificates automatically. Certificate d
 ---
 
 ## Troubleshooting
+
+### Analytics service fails to start
+
+- **Missing TOKEN_ENCRYPTION_KEY**: The service will fail with `RuntimeError: TOKEN_ENCRYPTION_KEY is not set`. Generate a Fernet key (see above).
+- **Invalid Fernet key**: If the key is malformed, the error will say `TOKEN_ENCRYPTION_KEY is not a valid Fernet key`.
+- **DB role mismatch**: If `EXPECTED_DB_ROLE` is set but the connection uses a different role, the service logs `DB role mismatch: expected 'X', got 'Y'`.
 
 ### Caddy fails to start / no HTTPS
 

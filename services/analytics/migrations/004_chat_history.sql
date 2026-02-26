@@ -81,6 +81,18 @@ CREATE POLICY user_isolation_delete ON chat_messages FOR DELETE
   USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
 -- ==========================================
+-- Trigger function (idempotent, matches 003's update_updated_at_column body)
+-- ==========================================
+
+CREATE OR REPLACE FUNCTION update_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ==========================================
 -- Triggers
 -- ==========================================
 

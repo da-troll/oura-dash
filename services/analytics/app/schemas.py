@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 # ============================================
@@ -25,14 +25,14 @@ class HealthResponse(BaseModel):
 class RegisterRequest(BaseModel):
     """Request to register a new user."""
 
-    email: str
+    email: EmailStr
     password: str = Field(min_length=8)
 
 
 class LoginRequest(BaseModel):
     """Request to login."""
 
-    email: str
+    email: EmailStr
     password: str
 
 
@@ -76,7 +76,7 @@ class ExchangeCodeRequest(BaseModel):
     """Request to exchange OAuth code for tokens."""
 
     code: str
-    state: str | None = None
+    state: str
 
 
 class ExchangeCodeResponse(BaseModel):

@@ -17,6 +17,7 @@ function getSessionToken(cookieStore: Awaited<ReturnType<typeof cookies>>): stri
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const code = searchParams.get("code");
+  const state = searchParams.get("state");
   const error = searchParams.get("error");
 
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
@@ -45,7 +46,7 @@ export async function GET(request: NextRequest) {
   try {
     // Forward code to analytics service for token exchange
     // The backend validates the OAuth state (stored in DB, bound to user)
-    const response = await exchangeCode(code, sessionToken);
+    const response = await exchangeCode(code, sessionToken, state || undefined);
 
     if (!response.success) {
       console.error("Token exchange failed:", response.message);

@@ -4,20 +4,28 @@ import asyncio
 import os
 from typing import AsyncGenerator
 
+# Set env vars BEFORE any app imports so settings are configured correctly
+os.environ.setdefault(
+    "DATABASE_URL",
+    os.environ.get(
+        "DATABASE_URL_TEST",
+        "postgresql://postgres:postgres@localhost:5433/oura_test",
+    ),
+)
+os.environ["ENABLE_AUTO_MIGRATE"] = "true"
+# Use a test Fernet key (base64-encoded 32-byte key)
+os.environ.setdefault(
+    "TOKEN_ENCRYPTION_KEY",
+    "A2y1ud6zuVb7ZiA9f-edGhvAuLpxKKre4bkOto9e8xM=",
+)
+
 import psycopg
 import pytest
 import pytest_asyncio
 from psycopg.rows import dict_row
 from httpx import ASGITransport, AsyncClient
 
-# Use test database
-os.environ.setdefault(
-    "DATABASE_URL",
-    os.environ.get("DATABASE_URL_TEST", "postgresql://postgres:postgres@localhost:5433/oura_test"),
-)
-os.environ["ENABLE_AUTO_MIGRATE"] = "true"
-
-from app.main import app
+from app.main import app, run_migrations
 from app.settings import settings
 
 
@@ -26,6 +34,22 @@ def event_loop():
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _run_migrations():
+    """Run migrations once before any tests (session-scoped)."""
+    await run_migrations()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_db():
+    """Truncate user data before each test for isolation."""
+    async with await psycopg.AsyncConnection.connect(
+        settings.database_url, row_factory=dict_row
+    ) as conn:
+        await conn.execute("DELETE FROM users")
+        await conn.commit()
 
 
 @pytest_asyncio.fixture
@@ -43,9 +67,15 @@ async def db_conn() -> AsyncGenerator[psycopg.AsyncConnection, None]:
         yield conn
 
 
-async def register_and_login(client: AsyncClient, email: str = "test@example.com", password: str = "testpass123") -> dict:
+async def register_and_login(
+    client: AsyncClient,
+    email: str = "test@example.com",
+    password: str = "testpass123",
+) -> dict:
     """Helper: register a user and return {user_id, email, token}."""
-    res = await client.post("/auth/register", json={"email": email, "password": password})
+    res = await client.post(
+        "/auth/register", json={"email": email, "password": password}
+    )
     assert res.status_code == 200
     data = res.json()
     return {

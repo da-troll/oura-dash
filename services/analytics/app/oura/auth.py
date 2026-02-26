@@ -23,16 +23,23 @@ def _get_fernet():
 
 def _encrypt(value: str) -> str:
     f = _get_fernet()
-    if f:
-        return f.encrypt(value.encode()).decode()
-    return value
+    if f is None:
+        raise RuntimeError(
+            "TOKEN_ENCRYPTION_KEY is not set. "
+            "Cannot store tokens without encryption. "
+            "Generate a key with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        )
+    return f.encrypt(value.encode()).decode()
 
 
 def _decrypt(value: str) -> str:
     f = _get_fernet()
-    if f:
-        return f.decrypt(value.encode()).decode()
-    return value
+    if f is None:
+        raise RuntimeError(
+            "TOKEN_ENCRYPTION_KEY is not set. "
+            "Cannot decrypt tokens without the encryption key."
+        )
+    return f.decrypt(value.encode()).decode()
 
 
 class OAuthError(Exception):

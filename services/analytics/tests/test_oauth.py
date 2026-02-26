@@ -73,3 +73,26 @@ async def test_oauth_revoke_requires_auth(client):
     """POST /auth/oura/revoke should require authentication."""
     res = await client.post("/auth/oura/revoke")
     assert res.status_code == 401
+
+
+async def test_exchange_rejects_missing_state(client):
+    """POST /auth/oura/exchange without state should return 422."""
+    user = await register_and_login(client, "nostate@example.com", "password123")
+    res = await client.post(
+        "/auth/oura/exchange",
+        json={"code": "some_code"},
+        headers=auth_headers(user["token"]),
+    )
+    assert res.status_code == 422
+
+
+async def test_exchange_validates_state(client):
+    """POST /auth/oura/exchange with invalid state should return 400."""
+    user = await register_and_login(client, "badstate@example.com", "password123")
+    res = await client.post(
+        "/auth/oura/exchange",
+        json={"code": "some_code", "state": "invalid_state_value"},
+        headers=auth_headers(user["token"]),
+    )
+    assert res.status_code == 400
+    assert "Invalid or expired OAuth state" in res.json()["detail"]
