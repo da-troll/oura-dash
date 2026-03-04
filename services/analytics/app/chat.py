@@ -1,12 +1,15 @@
 """AI chat agent with typed tool functions for health data analysis."""
 
 import asyncio
+import hashlib
 import json
 import logging
+import math
 import re
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, AsyncGenerator
 
 from openai import AsyncOpenAI
@@ -14,25 +17,29 @@ from openai import AsyncOpenAI
 from app.db import get_db_for_user
 from app.settings import settings
 
+try:
+    from redis import asyncio as redis_asyncio
+except Exception:  # pragma: no cover - optional dependency
+    redis_asyncio = None
+
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are Ouralie, a personal health analytics assistant for Oura Ring data. Your name is Ouralie (pronounced "or-ah-lee"). You help users understand their sleep, activity, readiness, and other health metrics tracked by their Oura Ring.
+SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompts" / "system_prompt.md"
+SYSTEM_PROMPT = ""
 
-Rules:
-- ALWAYS use the available tools to look up data before answering questions about the user's health metrics. Never guess numbers.
-- Cite the data sources and date ranges in your responses.
-- Be concise but informative.
-- If data is insufficient, say so honestly.
-- Provide actionable insights when possible.
-- Format numbers clearly (e.g., "7.5 hours" not "7.482 hours").
-- Use standard markdown for formatting (headings, bullets, emphasis), and DO NOT use markdown tables or pipe-delimited ASCII tables.
-- Do NOT include markdown images or HTML <img> tags in responses. Charts are rendered by the UI from tool results.
-- If the user does not specify a time period, default to the last 10 days.
-- When the user asks for a metric-vs-metric chart, use scatter data tools that return paired x/y points.
-- After each response, ask this follow-up question exactly: "Would you like a different time period, chart type, or another edit?"
-- Put an empty line before the follow-up question.
-- When introducing yourself, briefly mention your name and what you can help with, then use your tools to share a quick snapshot of the user's recent health data to demonstrate your capabilities.
-"""
+
+def initialize_system_prompt() -> None:
+    """Load system prompt once at startup."""
+    global SYSTEM_PROMPT
+
+    if not SYSTEM_PROMPT_PATH.exists():
+        raise RuntimeError(f"System prompt file not found: {SYSTEM_PROMPT_PATH}")
+
+    prompt = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    if not prompt:
+        raise RuntimeError(f"System prompt file is empty: {SYSTEM_PROMPT_PATH}")
+
+    SYSTEM_PROMPT = prompt
 
 INTRO_SENTINEL = "__OURALIE_INTRO__"
 DEFAULT_LOOKBACK_DAYS = 10
@@ -262,6 +269,379 @@ def _sanitize_markdown_images(content: str) -> str:
     return content
 
 
+def _estimate_tokens_text(text: str) -> int:
+    if not text:
+        return 0
+    # Lightweight approximation used for budgeting and telemetry.
+    return max(1, math.ceil(len(text) / 4))
+
+
+def _estimate_message_tokens(message: dict[str, Any]) -> int:
+    base = 6
+    content = message.get("content")
+    if isinstance(content, str):
+        base += _estimate_tokens_text(content)
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        base += _estimate_tokens_text(json.dumps(tool_calls, separators=(",", ":")))
+    return base
+
+
+def _estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
+    return sum(_estimate_message_tokens(message) for message in messages)
+
+
+def _parse_summary_state(raw: str | None) -> tuple[str, datetime | None]:
+    if not raw:
+        return "", None
+    text = raw.strip()
+    if not text:
+        return "", None
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            summary = str(payload.get("summary") or "").strip()
+            up_to_raw = payload.get("up_to_created_at")
+            if isinstance(up_to_raw, str) and up_to_raw:
+                try:
+                    up_to = datetime.fromisoformat(up_to_raw)
+                except ValueError:
+                    up_to = None
+            else:
+                up_to = None
+            return summary, up_to
+    except (TypeError, json.JSONDecodeError):
+        pass
+    # Backward compatibility for plain-text summaries.
+    return text, None
+
+
+def _serialize_summary_state(summary: str, up_to_created_at: datetime | None) -> str:
+    payload: dict[str, Any] = {"summary": summary.strip()}
+    if up_to_created_at:
+        payload["up_to_created_at"] = up_to_created_at.isoformat()
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def _truncate_text(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    keep = max(0, max_chars - 13)
+    return f"{value[:keep]}... [trimmed]"
+
+
+def _json_hash(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
+def _compact_numeric_stats(rows: list[dict[str, Any]]) -> dict[str, dict[str, float]] | None:
+    stats: dict[str, dict[str, float]] = {}
+    if not rows:
+        return None
+
+    numeric_keys: dict[str, list[float]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key, raw in row.items():
+            if isinstance(raw, bool):
+                continue
+            if isinstance(raw, (int, float)):
+                numeric_keys.setdefault(str(key), []).append(float(raw))
+
+    for key, values in numeric_keys.items():
+        if not values:
+            continue
+        stats[key] = {
+            "min": round(min(values), 4),
+            "max": round(max(values), 4),
+            "avg": round(sum(values) / len(values), 4),
+        }
+
+    return stats or None
+
+
+def _compact_list_field(items: list[Any], max_sample: int = 2) -> dict[str, Any]:
+    safe_items = [item for item in items if item is not None]
+    if not safe_items:
+        return {"count": 0}
+
+    payload: dict[str, Any] = {"count": len(safe_items)}
+    if isinstance(safe_items[0], dict):
+        dict_rows = [item for item in safe_items if isinstance(item, dict)]
+        payload["stats"] = _compact_numeric_stats(dict_rows)
+        payload["sample_first"] = dict_rows[:max_sample]
+        payload["sample_last"] = dict_rows[-max_sample:]
+
+        # Optional trend direction for common numeric keys.
+        for key in ("value", "rho", "x", "y", "magnitude", "count"):
+            series = [float(row[key]) for row in dict_rows if isinstance(row.get(key), (int, float))]
+            if len(series) >= 2:
+                delta = series[-1] - series[0]
+                payload["trend"] = {
+                    "key": key,
+                    "direction": "up" if delta > 0 else "down" if delta < 0 else "flat",
+                    "delta": round(delta, 4),
+                }
+                break
+    else:
+        payload["sample_first"] = safe_items[:max_sample]
+        payload["sample_last"] = safe_items[-max_sample:]
+    return payload
+
+
+def _compact_tool_result_for_context(tool_name: str, raw_result: str, max_chars: int) -> tuple[str, int]:
+    compacted: str
+    try:
+        parsed = json.loads(raw_result)
+    except (TypeError, json.JSONDecodeError):
+        compacted = _truncate_text(raw_result, max_chars)
+        saved = max(0, _estimate_tokens_text(raw_result) - _estimate_tokens_text(compacted))
+        return compacted, saved
+
+    payload: dict[str, Any] = {
+        "tool": tool_name,
+        "reference_id": _json_hash(parsed),
+    }
+    if isinstance(parsed, dict):
+        scalar_keys = (
+            "metric",
+            "metrics",
+            "target",
+            "period",
+            "count",
+            "days_with_data",
+            "chronotype",
+            "social_jetlag_minutes",
+            "error",
+            "message",
+        )
+        for key in scalar_keys:
+            if key in parsed:
+                payload[key] = parsed[key]
+
+        list_keys = (
+            "data",
+            "correlations",
+            "anomalies",
+            "change_points",
+            "points",
+            "bins",
+            "weeks",
+            "lags",
+        )
+        for key in list_keys:
+            raw_items = parsed.get(key)
+            if isinstance(raw_items, list):
+                payload[key] = _compact_list_field(raw_items)
+
+        if "data" not in payload and isinstance(parsed.get("data"), dict):
+            payload["data"] = parsed["data"]
+    elif isinstance(parsed, list):
+        payload["items"] = _compact_list_field(parsed)
+    else:
+        payload["value"] = parsed
+
+    compacted = json.dumps(payload, separators=(",", ":"), default=str)
+    compacted = _truncate_text(compacted, max_chars)
+    saved_tokens = max(0, _estimate_tokens_text(raw_result) - _estimate_tokens_text(compacted))
+    return compacted, saved_tokens
+
+
+def _build_context_from_history(
+    *,
+    base_messages: list[dict[str, Any]],
+    history_messages: list[dict[str, Any]],
+    budget_tokens: int,
+    min_recent_messages: int,
+) -> tuple[list[dict[str, Any]], int, int]:
+    if not history_messages:
+        base_tokens = _estimate_messages_tokens(base_messages)
+        return list(base_messages), base_tokens, 0
+
+    keep_recent = max(0, min(min_recent_messages, len(history_messages)))
+    recent = history_messages[-keep_recent:] if keep_recent else []
+    recent_tokens = _estimate_messages_tokens(recent)
+
+    context = list(base_messages)
+    total_tokens = _estimate_messages_tokens(context) + recent_tokens
+
+    selected_older: list[dict[str, Any]] = []
+    idx = len(history_messages) - keep_recent - 1
+    while idx >= 0:
+        candidate = history_messages[idx]
+        candidate_tokens = _estimate_message_tokens(candidate)
+        if total_tokens + candidate_tokens > budget_tokens:
+            break
+        selected_older.append(candidate)
+        total_tokens += candidate_tokens
+        idx -= 1
+
+    selected_older.reverse()
+    context.extend(selected_older)
+    context.extend(recent)
+
+    omitted_messages = max(0, idx + 1)
+    return context, total_tokens, omitted_messages
+
+
+def _render_messages_for_summary(rows: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for row in rows:
+        role = str(row.get("role", "unknown"))
+        content = str(row.get("content") or "").strip()
+        if not content:
+            continue
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def _normalize_memory_content(content: str) -> str:
+    normalized = content.strip().lower()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized
+
+
+def _vector_literal(vector: list[float]) -> str:
+    return "[" + ",".join(f"{value:.8f}" for value in vector) + "]"
+
+
+def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
+    if not vec_a or not vec_b or len(vec_a) != len(vec_b):
+        return 0.0
+    dot = sum(a * b for a, b in zip(vec_a, vec_b))
+    mag_a = math.sqrt(sum(a * a for a in vec_a))
+    mag_b = math.sqrt(sum(b * b for b in vec_b))
+    if mag_a == 0 or mag_b == 0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
+def _build_memory_prompt_block(memories: list[dict[str, Any]], max_tokens: int) -> tuple[str, int]:
+    if not memories:
+        return "", 0
+
+    lines = ["Relevant long-term memory (high confidence):"]
+    for item in memories:
+        memory_type = item.get("memory_type", "episodic")
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        confidence = item.get("confidence")
+        score = f" ({float(confidence):.2f})" if isinstance(confidence, (int, float)) else ""
+        candidate_line = f"- [{memory_type}] {content}{score}"
+        next_tokens = _estimate_tokens_text("\n".join(lines + [candidate_line]))
+        if next_tokens > max_tokens:
+            break
+        lines.append(candidate_line)
+
+    if len(lines) == 1:
+        return "", 0
+    block = "\n".join(lines)
+    return block, _estimate_tokens_text(block)
+
+
+class _ChatCache:
+    def __init__(self):
+        self._redis = None
+        self._redis_init_done = False
+        self._init_lock = asyncio.Lock()
+        self._local: dict[str, tuple[float, Any]] = {}
+
+    async def _get_redis(self):
+        if not settings.chat_redis_cache_enabled or not settings.redis_url or redis_asyncio is None:
+            return None
+        if self._redis_init_done:
+            return self._redis
+
+        async with self._init_lock:
+            if self._redis_init_done:
+                return self._redis
+            try:
+                client = redis_asyncio.from_url(settings.redis_url, decode_responses=True)
+                await client.ping()
+                self._redis = client
+            except Exception:
+                logger.warning("Redis unavailable for chat cache; using local fallback", exc_info=True)
+                self._redis = None
+            finally:
+                self._redis_init_done = True
+        return self._redis
+
+    async def get_json(self, key: str) -> Any | None:
+        now = time.time()
+        local_entry = self._local.get(key)
+        if local_entry:
+            expires_at, value = local_entry
+            if expires_at >= now:
+                return value
+            self._local.pop(key, None)
+
+        client = await self._get_redis()
+        if not client:
+            return None
+        try:
+            raw = await client.get(key)
+            if raw is None:
+                return None
+            return json.loads(raw)
+        except Exception:
+            logger.warning("Redis get failed for key=%s", key, exc_info=True)
+            return None
+
+    async def set_json(self, key: str, value: Any, ttl_seconds: int) -> None:
+        expires_at = time.time() + max(1, ttl_seconds)
+        self._local[key] = (expires_at, value)
+
+        client = await self._get_redis()
+        if not client:
+            return
+        try:
+            await client.set(key, json.dumps(value, separators=(",", ":"), default=str), ex=ttl_seconds)
+        except Exception:
+            logger.warning("Redis set failed for key=%s", key, exc_info=True)
+
+    async def delete_prefix(self, prefix: str) -> None:
+        for key in list(self._local.keys()):
+            if key.startswith(prefix):
+                self._local.pop(key, None)
+
+        client = await self._get_redis()
+        if not client:
+            return
+        try:
+            cursor = 0
+            pattern = f"{prefix}*"
+            while True:
+                cursor, keys = await client.scan(cursor=cursor, match=pattern, count=200)
+                if keys:
+                    await client.delete(*keys)
+                if cursor == 0:
+                    break
+        except Exception:
+            logger.warning("Redis delete_prefix failed for prefix=%s", prefix, exc_info=True)
+
+
+_chat_cache = _ChatCache()
+
+
+def _tool_cache_key(user_id: str, tool_name: str, args: dict[str, Any]) -> str:
+    return f"chat:tool:{user_id}:{tool_name}:{_json_hash(args)}"
+
+
+def _embedding_cache_key(user_id: str, text: str) -> str:
+    return f"chat:embedding:{user_id}:{_json_hash(text)}"
+
+
+def _session_context_key(user_id: str, conversation_id: str, history_hash: str) -> str:
+    return f"chat:session-context:{user_id}:{conversation_id}:{history_hash}"
+
+
+def _user_cache_prefix(user_id: str) -> str:
+    return f"chat:{user_id}:"
+
+
 def _build_chart_payload(tool_name: str, args: dict, raw_result: str) -> dict[str, Any] | None:
     """Build a UI-ready chart artifact from a tool result."""
     try:
@@ -392,7 +772,7 @@ def _build_chart_payload(tool_name: str, args: dict, raw_result: str) -> dict[st
             if metric_name is None or rho is None:
                 continue
             chart_points.append({
-                "metric": str(metric_name),
+                "metric": _metric_label(str(metric_name)),
                 "rho": round(float(rho), 3),
             })
 
@@ -411,6 +791,18 @@ def _build_chart_payload(tool_name: str, args: dict, raw_result: str) -> dict[st
                 "dateRange": parsed.get("period"),
             }
 
+        if len(chart_points) == 1:
+            return {
+                "chartType": "single_value",
+                "title": f"Correlation with {_metric_label(str(target))}",
+                "xKey": "metric",
+                "series": [{"key": "rho", "label": "Spearman rho", "color": "#6366f1"}],
+                "data": chart_points,
+                "source": tool_name,
+                "dateRange": parsed.get("period"),
+                "yDomain": [-1, 1],
+            }
+
         return {
             "chartType": "bar",
             "title": f"Correlation with {_metric_label(str(target))}",
@@ -418,6 +810,7 @@ def _build_chart_payload(tool_name: str, args: dict, raw_result: str) -> dict[st
             "series": [{"key": "rho", "label": "Spearman rho", "color": "#6366f1"}],
             "data": chart_points[:10],
             "source": tool_name,
+            "dateRange": parsed.get("period"),
             "yDomain": [-1, 1],
         }
 
@@ -1605,27 +1998,42 @@ async def _save_message(
     tokens_in: int | None = None,
     tokens_out: int | None = None,
     latency_ms: int | None = None,
-):
+)-> str | None:
     """Persist a chat message to the database."""
     async with get_db_for_user(user_id) as conn:
-        await conn.execute(
-            """
-            INSERT INTO chat_messages (user_id, conversation_id, role, content, tool_calls, artifacts, model, tokens_in, tokens_out, latency_ms)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                user_id,
-                conversation_id,
-                role,
-                content,
-                json.dumps(tool_calls) if tool_calls else None,
-                json.dumps(artifacts) if artifacts else None,
-                model,
-                tokens_in,
-                tokens_out,
-                latency_ms,
-            ),
-        )
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO chat_messages (
+                    user_id,
+                    conversation_id,
+                    role,
+                    content,
+                    tool_calls,
+                    artifacts,
+                    model,
+                    tokens_in,
+                    tokens_out,
+                    latency_ms
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    user_id,
+                    conversation_id,
+                    role,
+                    content,
+                    json.dumps(tool_calls) if tool_calls else None,
+                    json.dumps(artifacts) if artifacts else None,
+                    model,
+                    tokens_in,
+                    tokens_out,
+                    latency_ms,
+                ),
+            )
+            row = await cur.fetchone()
+    return str(row["id"]) if row else None
 
 
 async def _ensure_conversation(user_id: str, conversation_id: str | None, title: str | None = None) -> str:
@@ -1652,6 +2060,607 @@ async def _ensure_conversation(user_id: str, conversation_id: str | None, title:
     return new_id
 
 
+async def _load_conversation_state(user_id: str, conversation_id: str) -> tuple[str, list[dict[str, Any]]]:
+    async with get_db_for_user(user_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT memory_summary
+                FROM chat_conversations
+                WHERE id = %s AND user_id = %s
+                """,
+                (conversation_id, user_id),
+            )
+            summary_row = await cur.fetchone()
+            memory_summary = summary_row["memory_summary"] if summary_row else ""
+
+            await cur.execute(
+                """
+                SELECT id, role, content, created_at
+                FROM chat_messages
+                WHERE conversation_id = %s AND user_id = %s
+                ORDER BY created_at ASC
+                """,
+                (conversation_id, user_id),
+            )
+            history_rows = await cur.fetchall()
+    return memory_summary or "", history_rows
+
+
+async def _save_conversation_summary_state(
+    user_id: str,
+    conversation_id: str,
+    summary_text: str,
+    up_to_created_at: datetime | None,
+) -> None:
+    payload = _serialize_summary_state(summary_text, up_to_created_at)
+    async with get_db_for_user(user_id) as conn:
+        await conn.execute(
+            """
+            UPDATE chat_conversations
+            SET memory_summary = %s, updated_at = NOW()
+            WHERE id = %s AND user_id = %s
+            """,
+            (payload, conversation_id, user_id),
+        )
+
+
+async def _maybe_refresh_conversation_summary(
+    *,
+    client: AsyncOpenAI,
+    user_id: str,
+    conversation_id: str,
+    raw_memory_summary: str,
+    history_rows: list[dict[str, Any]],
+) -> tuple[str, datetime | None, bool]:
+    summary_text, up_to_created_at = _parse_summary_state(raw_memory_summary)
+
+    if not settings.chat_phase1_memory_enabled:
+        return summary_text, up_to_created_at, False
+    if not history_rows:
+        return summary_text, up_to_created_at, False
+
+    history_messages = [
+        {"role": row["role"], "content": row["content"]}
+        for row in history_rows
+    ]
+    history_tokens = _estimate_messages_tokens(history_messages)
+    if history_tokens <= settings.chat_summary_trigger_tokens:
+        return summary_text, up_to_created_at, False
+
+    unsummarized_rows = [
+        row for row in history_rows
+        if up_to_created_at is None or row["created_at"] > up_to_created_at
+    ]
+    keep_recent = max(1, settings.chat_recent_turns_min)
+    if len(unsummarized_rows) <= keep_recent:
+        return summary_text, up_to_created_at, False
+
+    rows_to_summarize = unsummarized_rows[:-keep_recent]
+    transcript = _render_messages_for_summary(rows_to_summarize)
+    if not transcript.strip():
+        return summary_text, up_to_created_at, False
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=settings.chat_summary_max_tokens,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Summarize the conversation context for future turns. "
+                        "Keep high-signal facts, user preferences, constraints, and open questions. "
+                        "Be concise and do not invent facts."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "existing_summary": summary_text,
+                            "new_messages": transcript,
+                            "format": "Short bullet list, <= 12 bullets",
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        )
+        updated_summary = (response.choices[0].message.content or "").strip()
+    except Exception:
+        logger.warning("Failed to refresh conversation summary", exc_info=True)
+        return summary_text, up_to_created_at, False
+
+    if not updated_summary:
+        return summary_text, up_to_created_at, False
+
+    new_up_to_created_at = rows_to_summarize[-1]["created_at"]
+    await _save_conversation_summary_state(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        summary_text=updated_summary,
+        up_to_created_at=new_up_to_created_at,
+    )
+    return updated_summary, new_up_to_created_at, True
+
+
+async def _detect_chat_memories_embedding_kind(user_id: str) -> str | None:
+    async with get_db_for_user(user_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT udt_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'chat_memories'
+                  AND column_name = 'embedding'
+                """
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            udt_name = row["udt_name"]
+            if udt_name == "vector":
+                return "vector"
+            if udt_name == "_float8":
+                return "array"
+            return "array"
+
+
+async def _get_embedding_for_text(
+    *,
+    client: AsyncOpenAI,
+    user_id: str,
+    text: str,
+) -> list[float] | None:
+    normalized = text.strip()
+    if not normalized:
+        return None
+
+    cache_key = _embedding_cache_key(user_id, normalized)
+    cached = await _chat_cache.get_json(cache_key)
+    if isinstance(cached, list) and cached:
+        return [float(value) for value in cached]
+
+    try:
+        response = await client.embeddings.create(
+            model="text-embedding-3-large",
+            input=normalized,
+            dimensions=1024,
+        )
+    except Exception:
+        logger.warning("Embedding generation failed", exc_info=True)
+        return None
+
+    vector = response.data[0].embedding if response.data else None
+    if not vector:
+        return None
+    vector = [float(value) for value in vector]
+
+    await _chat_cache.set_json(
+        cache_key,
+        vector,
+        ttl_seconds=settings.chat_embedding_cache_ttl_seconds,
+    )
+    return vector
+
+
+async def _retrieve_long_term_memory_block(
+    *,
+    client: AsyncOpenAI,
+    user_id: str,
+    query_text: str,
+) -> tuple[str, int, int]:
+    if not settings.chat_long_term_memory_enabled:
+        return "", 0, 0
+
+    embedding_kind = await _detect_chat_memories_embedding_kind(user_id)
+    if embedding_kind is None:
+        return "", 0, 0
+
+    query_embedding = await _get_embedding_for_text(
+        client=client,
+        user_id=user_id,
+        text=query_text,
+    )
+    if not query_embedding:
+        return "", 0, 0
+
+    top_k = max(1, settings.chat_memory_retrieval_top_k)
+    keep_k = max(1, settings.chat_memory_retrieval_keep_k)
+    threshold = settings.chat_memory_similarity_threshold
+    now = datetime.now(timezone.utc)
+
+    memories: list[dict[str, Any]] = []
+    try:
+        async with get_db_for_user(user_id) as conn:
+            async with conn.cursor() as cur:
+                if embedding_kind == "vector":
+                    vector_literal = _vector_literal(query_embedding)
+                    await cur.execute(
+                        """
+                        SELECT
+                            id,
+                            memory_type,
+                            content,
+                            confidence,
+                            importance,
+                            last_seen_at,
+                            (1 - (embedding <=> %s::vector)) AS similarity
+                        FROM chat_memories
+                        WHERE user_id = %s
+                          AND embedding IS NOT NULL
+                          AND (expires_at IS NULL OR expires_at > NOW())
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT %s
+                        """,
+                        (vector_literal, user_id, vector_literal, top_k),
+                    )
+                    memories = await cur.fetchall()
+                else:
+                    await cur.execute(
+                        """
+                        SELECT
+                            id,
+                            memory_type,
+                            content,
+                            confidence,
+                            importance,
+                            last_seen_at,
+                            embedding
+                        FROM chat_memories
+                        WHERE user_id = %s
+                          AND embedding IS NOT NULL
+                          AND (expires_at IS NULL OR expires_at > NOW())
+                        ORDER BY last_seen_at DESC
+                        LIMIT %s
+                        """,
+                        (user_id, top_k * 2),
+                    )
+                    rows = await cur.fetchall()
+                    for row in rows:
+                        embedding = row.get("embedding")
+                        if not isinstance(embedding, list):
+                            continue
+                        row["similarity"] = _cosine_similarity(
+                            [float(v) for v in embedding],
+                            query_embedding,
+                        )
+                        memories.append(row)
+    except Exception:
+        logger.warning("Long-term memory retrieval failed", exc_info=True)
+        return "", 0, 0
+
+    ranked: list[dict[str, Any]] = []
+    for memory in memories:
+        similarity = float(memory.get("similarity") or 0.0)
+        if similarity < threshold:
+            continue
+        confidence = float(memory.get("confidence") or 0.5)
+        importance = float(memory.get("importance") or 0.5)
+        last_seen = memory.get("last_seen_at") or now
+        age_days = max(0.0, (now - last_seen).total_seconds() / 86400.0)
+        recency_score = math.exp(-age_days / 30.0)
+        blended = 0.6 * similarity + 0.2 * confidence + 0.1 * importance + 0.1 * recency_score
+        ranked.append({
+            **memory,
+            "score": blended,
+        })
+
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    selected = ranked[:keep_k]
+    prompt_block, memory_tokens = _build_memory_prompt_block(
+        selected,
+        max_tokens=settings.chat_memory_retrieval_max_tokens,
+    )
+    return prompt_block, memory_tokens, len(selected)
+
+
+async def _extract_candidate_memories(
+    *,
+    client: AsyncOpenAI,
+    user_message: str,
+    assistant_message: str,
+) -> list[dict[str, Any]]:
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=300,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract durable user memory candidates. "
+                        "Return JSON object with key 'memories'. "
+                        "Each memory: memory_type(profile|preference|goal|episodic), "
+                        "content, confidence(0..1), importance(0..1), ttl_days(optional integer). "
+                        "Only include high-signal facts worth reusing later."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"user_message": user_message, "assistant_message": assistant_message},
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        )
+        content = (response.choices[0].message.content or "").strip()
+        parsed = json.loads(content)
+    except Exception:
+        logger.warning("Memory extraction failed", exc_info=True)
+        return []
+
+    raw_memories = parsed.get("memories")
+    if not isinstance(raw_memories, list):
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    seen_norm: set[str] = set()
+    for item in raw_memories:
+        if not isinstance(item, dict):
+            continue
+        memory_type = str(item.get("memory_type") or "").strip().lower()
+        if memory_type not in {"profile", "preference", "goal", "episodic"}:
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        normalized = _normalize_memory_content(content)
+        if normalized in seen_norm:
+            continue
+        seen_norm.add(normalized)
+
+        confidence_raw = item.get("confidence", 0.7)
+        importance_raw = item.get("importance", 0.5)
+        try:
+            confidence = min(1.0, max(0.0, float(confidence_raw)))
+        except (TypeError, ValueError):
+            confidence = 0.7
+        try:
+            importance = min(1.0, max(0.0, float(importance_raw)))
+        except (TypeError, ValueError):
+            importance = 0.5
+
+        ttl_days_raw = item.get("ttl_days")
+        ttl_days: int | None
+        if ttl_days_raw is None:
+            ttl_days = 90 if memory_type == "episodic" else None
+        else:
+            try:
+                ttl_days = max(1, int(ttl_days_raw))
+            except (TypeError, ValueError):
+                ttl_days = 90 if memory_type == "episodic" else None
+
+        candidates.append(
+            {
+                "memory_type": memory_type,
+                "content": content,
+                "content_norm": normalized,
+                "confidence": confidence,
+                "importance": importance,
+                "ttl_days": ttl_days,
+            }
+        )
+    return candidates
+
+
+async def _upsert_memory_candidate(
+    *,
+    user_id: str,
+    conversation_id: str,
+    source_message_id: str | None,
+    embedding_kind: str,
+    candidate: dict[str, Any],
+    embedding: list[float],
+) -> bool:
+    expires_at: datetime | None = None
+    ttl_days = candidate.get("ttl_days")
+    if isinstance(ttl_days, int):
+        expires_at = datetime.now(timezone.utc) + timedelta(days=ttl_days)
+
+    memory_type = candidate["memory_type"]
+    content = candidate["content"]
+    content_norm = candidate["content_norm"]
+    confidence = float(candidate["confidence"])
+    importance = float(candidate["importance"])
+
+    try:
+        async with get_db_for_user(user_id) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT id, confidence, importance
+                    FROM chat_memories
+                    WHERE user_id = %s
+                      AND memory_type = %s
+                      AND content_norm = %s
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (user_id, memory_type, content_norm),
+                )
+                existing = await cur.fetchone()
+                if existing:
+                    await cur.execute(
+                        """
+                        UPDATE chat_memories
+                        SET
+                            content = %s,
+                            confidence = GREATEST(confidence, %s),
+                            importance = GREATEST(importance, %s),
+                            source_conversation_id = %s,
+                            source_message_id = %s,
+                            expires_at = COALESCE(%s, expires_at),
+                            last_seen_at = NOW(),
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (
+                            content,
+                            confidence,
+                            importance,
+                            conversation_id,
+                            source_message_id,
+                            expires_at,
+                            existing["id"],
+                        ),
+                    )
+                    return False
+
+                if embedding_kind == "vector":
+                    vector_literal = _vector_literal(embedding)
+                    await cur.execute(
+                        """
+                        SELECT id, (1 - (embedding <=> %s::vector)) AS similarity
+                        FROM chat_memories
+                        WHERE user_id = %s
+                          AND memory_type = %s
+                          AND embedding IS NOT NULL
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT 1
+                        """,
+                        (vector_literal, user_id, memory_type, vector_literal),
+                    )
+                    near = await cur.fetchone()
+                    if near and float(near.get("similarity") or 0.0) >= 0.92:
+                        await cur.execute(
+                            """
+                            UPDATE chat_memories
+                            SET
+                                content = %s,
+                                content_norm = %s,
+                                confidence = GREATEST(confidence, %s),
+                                importance = GREATEST(importance, %s),
+                                source_conversation_id = %s,
+                                source_message_id = %s,
+                                expires_at = COALESCE(%s, expires_at),
+                                last_seen_at = NOW(),
+                                updated_at = NOW()
+                            WHERE id = %s
+                            """,
+                            (
+                                content,
+                                content_norm,
+                                confidence,
+                                importance,
+                                conversation_id,
+                                source_message_id,
+                                expires_at,
+                                near["id"],
+                            ),
+                        )
+                        return False
+
+                if embedding_kind == "vector":
+                    embedding_value: Any = _vector_literal(embedding)
+                    cast = "::vector"
+                else:
+                    embedding_value = embedding
+                    cast = ""
+
+                await cur.execute(
+                    f"""
+                    INSERT INTO chat_memories (
+                        user_id,
+                        memory_type,
+                        content,
+                        content_norm,
+                        confidence,
+                        importance,
+                        source_conversation_id,
+                        source_message_id,
+                        expires_at,
+                        last_seen_at,
+                        embedding
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s{cast})
+                    """,
+                    (
+                        user_id,
+                        memory_type,
+                        content,
+                        content_norm,
+                        confidence,
+                        importance,
+                        conversation_id,
+                        source_message_id,
+                        expires_at,
+                        embedding_value,
+                    ),
+                )
+                return True
+    except Exception:
+        logger.warning("Memory upsert failed", exc_info=True)
+        return False
+
+
+async def _extract_and_store_memories(
+    *,
+    client: AsyncOpenAI,
+    user_id: str,
+    conversation_id: str,
+    user_message: str,
+    assistant_message: str,
+    source_message_id: str | None,
+) -> tuple[int, int]:
+    if not settings.chat_long_term_memory_enabled:
+        return 0, 0
+    if not user_message.strip() or not assistant_message.strip():
+        return 0, 0
+
+    embedding_kind = await _detect_chat_memories_embedding_kind(user_id)
+    if embedding_kind is None:
+        return 0, 0
+
+    candidates = await _extract_candidate_memories(
+        client=client,
+        user_message=user_message,
+        assistant_message=assistant_message,
+    )
+    if not candidates:
+        return 0, 0
+
+    contents = [candidate["content"] for candidate in candidates]
+    vectors: list[list[float]] = []
+    try:
+        response = await client.embeddings.create(
+            model="text-embedding-3-large",
+            input=contents,
+            dimensions=1024,
+        )
+        vectors = [[float(value) for value in item.embedding] for item in response.data]
+    except Exception:
+        logger.warning("Bulk memory embedding failed", exc_info=True)
+        return 0, 0
+
+    inserted = 0
+    dedup_dropped = 0
+    for candidate, vector in zip(candidates, vectors):
+        created = await _upsert_memory_candidate(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            source_message_id=source_message_id,
+            embedding_kind=embedding_kind,
+            candidate=candidate,
+            embedding=vector,
+        )
+        if created:
+            inserted += 1
+        else:
+            dedup_dropped += 1
+    return inserted, dedup_dropped
+
+
+async def invalidate_user_chat_cache(user_id: str) -> None:
+    await _chat_cache.delete_prefix(f"chat:tool:{user_id}:")
+    await _chat_cache.delete_prefix(f"chat:embedding:{user_id}:")
+    await _chat_cache.delete_prefix(f"chat:session-context:{user_id}:")
+
+
 async def run_chat(
     user_id: str,
     message: str,
@@ -1672,6 +2681,11 @@ async def run_chat(
         yield json.dumps({"type": "error", "message": "Chat is not configured (missing API key)"}) + "\n"
         return
 
+    if not SYSTEM_PROMPT:
+        raise RuntimeError(
+            f"System prompt is not initialized. Ensure startup loaded {SYSTEM_PROMPT_PATH}."
+        )
+
     is_intro = message == INTRO_SENTINEL
 
     # Ensure conversation exists
@@ -1680,38 +2694,103 @@ async def run_chat(
     )
     yield json.dumps({"type": "conversation_id", "id": conv_id}) + "\n"
 
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    user_message_id: str | None = None
+
     # Save user message (skip for intro — it's not a real user message)
     if not is_intro:
-        await _save_message(user_id, conv_id, "user", message)
+        user_message_id = await _save_message(user_id, conv_id, "user", message)
 
-    # Load conversation history
-    async with get_db_for_user(user_id) as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                SELECT role, content FROM chat_messages
-                WHERE conversation_id = %s AND user_id = %s
-                ORDER BY created_at
-                LIMIT 50
-                """,
-                (conv_id, user_id),
-            )
-            history_rows = await cur.fetchall()
+    raw_memory_summary, history_rows = await _load_conversation_state(user_id, conv_id)
+    summary_text, summary_up_to_created_at, _summary_refreshed = await _maybe_refresh_conversation_summary(
+        client=client,
+        user_id=user_id,
+        conversation_id=conv_id,
+        raw_memory_summary=raw_memory_summary,
+        history_rows=history_rows,
+    )
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for row in history_rows:
-        messages.append({"role": row["role"], "content": row["content"]})
+    unsummarized_history_rows = [
+        row for row in history_rows
+        if summary_up_to_created_at is None or row["created_at"] > summary_up_to_created_at
+    ]
+    history_messages = [
+        {"role": row["role"], "content": row["content"]}
+        for row in unsummarized_history_rows
+    ]
 
-    if is_intro:
-        messages.append({
-            "role": "user",
-            "content": "Introduce yourself and give me a quick snapshot of how I've been doing recently.",
+    memory_query = (
+        "Introduce yourself and give me a quick snapshot of how I've been doing recently."
+        if is_intro else message
+    )
+    long_term_memory_block, memory_injected_tokens, memory_retrieved_count = await _retrieve_long_term_memory_block(
+        client=client,
+        user_id=user_id,
+        query_text=memory_query,
+    )
+
+    base_messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    summary_used = bool(summary_text.strip())
+    if summary_used:
+        base_messages.append({
+            "role": "system",
+            "content": f"Conversation summary:\n{summary_text.strip()}",
+        })
+    if long_term_memory_block:
+        base_messages.append({
+            "role": "system",
+            "content": long_term_memory_block,
         })
 
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    history_hash = _json_hash(
+        [str(row["id"]) for row in unsummarized_history_rows]
+        + [message]
+        + [summary_text]
+        + [long_term_memory_block]
+    )
+    session_key = _session_context_key(user_id, conv_id, history_hash)
+    cached_context = await _chat_cache.get_json(session_key)
+    context_tokens_est = 0
+    omitted_messages = 0
+    messages: list[dict[str, Any]]
+    if isinstance(cached_context, dict) and isinstance(cached_context.get("messages"), list):
+        messages = cached_context["messages"]
+        context_tokens_est = int(cached_context.get("context_tokens_est") or 0)
+        omitted_messages = int(cached_context.get("omitted_messages") or 0)
+    else:
+        messages, context_tokens_est, omitted_messages = _build_context_from_history(
+            base_messages=base_messages,
+            history_messages=history_messages,
+            budget_tokens=settings.chat_context_budget_tokens,
+            min_recent_messages=settings.chat_recent_turns_min,
+        )
+        await _chat_cache.set_json(
+            session_key,
+            {
+                "messages": messages,
+                "context_tokens_est": context_tokens_est,
+                "omitted_messages": omitted_messages,
+            },
+            ttl_seconds=max(30, settings.chat_session_state_ttl_seconds),
+        )
+
+    if is_intro:
+        intro_message = {
+            "role": "user",
+            "content": "Introduce yourself and give me a quick snapshot of how I've been doing recently.",
+        }
+        messages.append(intro_message)
+        context_tokens_est += _estimate_message_tokens(intro_message)
+
     tool_call_count = 0
     start_time = time.monotonic()
     chart_artifacts: list[dict[str, Any]] = []
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    tool_tokens_saved_est = 0
+    memory_extracted_count = 0
+    memory_dedup_dropped_count = 0
+    tool_cache_hits = 0
 
     try:
         while tool_call_count < settings.chat_max_tool_calls_per_turn:
@@ -1722,6 +2801,7 @@ async def run_chat(
                 return
 
             # Call OpenAI
+            context_tokens_est = _estimate_messages_tokens(messages)
             response = await asyncio.wait_for(
                 client.chat.completions.create(
                     model="gpt-4o",
@@ -1731,6 +2811,9 @@ async def run_chat(
                 ),
                 timeout=settings.chat_timeout_seconds - elapsed,
             )
+            if response.usage:
+                total_prompt_tokens += response.usage.prompt_tokens or 0
+                total_completion_tokens += response.usage.completion_tokens or 0
 
             choice = response.choices[0]
             assistant_message = choice.message
@@ -1768,7 +2851,35 @@ async def run_chat(
 
                     yield json.dumps({"type": "tool_call", "name": name, "args": args}) + "\n"
 
-                    result, chart_payload = await _execute_tool(name, args, user_id)
+                    cache_key = _tool_cache_key(user_id, name, args)
+                    cached_tool = await _chat_cache.get_json(cache_key)
+                    if isinstance(cached_tool, dict) and isinstance(cached_tool.get("result"), str):
+                        tool_cache_hits += 1
+                        result = str(cached_tool["result"])
+                        compacted_result = str(cached_tool.get("compacted_result") or result)
+                        chart_payload = cached_tool.get("chart_payload")
+                    else:
+                        result, chart_payload = await _execute_tool(name, args, user_id)
+                        compacted_result, saved_tokens = _compact_tool_result_for_context(
+                            name,
+                            result,
+                            settings.chat_tool_result_max_chars,
+                        )
+                        tool_tokens_saved_est += saved_tokens
+                        await _chat_cache.set_json(
+                            cache_key,
+                            {
+                                "result": result,
+                                "compacted_result": compacted_result,
+                                "chart_payload": chart_payload,
+                            },
+                            ttl_seconds=max(60, settings.chat_cache_ttl_seconds),
+                        )
+                    if isinstance(cached_tool, dict):
+                        tool_tokens_saved_est += max(
+                            0,
+                            _estimate_tokens_text(result) - _estimate_tokens_text(compacted_result),
+                        )
 
                     yield json.dumps({"type": "tool_result", "name": name, "summary": result[:200]}) + "\n"
 
@@ -1779,7 +2890,7 @@ async def run_chat(
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": result,
+                        "content": compacted_result,
                     })
 
                 continue  # Loop back for another completion
@@ -1796,17 +2907,46 @@ async def run_chat(
 
             # Save assistant response
             latency_ms = int((time.monotonic() - start_time) * 1000)
-            await _save_message(
+            tokens_in = total_prompt_tokens if total_prompt_tokens > 0 else None
+            tokens_out = total_completion_tokens if total_completion_tokens > 0 else None
+            assistant_message_id = await _save_message(
                 user_id,
                 conv_id,
                 "assistant",
                 content,
                 artifacts=chart_artifacts or None,
                 model="gpt-4o",
-                tokens_in=response.usage.prompt_tokens if response.usage else None,
-                tokens_out=response.usage.completion_tokens if response.usage else None,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
                 latency_ms=latency_ms,
             )
+
+            if not is_intro and user_message_id:
+                memory_extracted_count, memory_dedup_dropped_count = await _extract_and_store_memories(
+                    client=client,
+                    user_id=user_id,
+                    conversation_id=conv_id,
+                    user_message=message,
+                    assistant_message=content,
+                    source_message_id=assistant_message_id,
+                )
+
+            if tokens_in is not None or tokens_out is not None:
+                yield json.dumps({
+                    "type": "usage",
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                    "tokens_total": (tokens_in or 0) + (tokens_out or 0),
+                    "context_tokens_est": context_tokens_est,
+                    "tool_tokens_saved_est": tool_tokens_saved_est,
+                    "summary_used": summary_used,
+                    "messages_omitted": omitted_messages,
+                    "memory_retrieved_count": memory_retrieved_count,
+                    "memory_injected_tokens": memory_injected_tokens,
+                    "memory_extracted_count": memory_extracted_count,
+                    "memory_dedup_dropped_count": memory_dedup_dropped_count,
+                    "tool_cache_hits": tool_cache_hits,
+                }) + "\n"
 
             # Update conversation title if it's a new conversation
             if (not conversation_id or is_intro) and content:
@@ -1816,6 +2956,19 @@ async def run_chat(
                         "UPDATE chat_conversations SET title = %s, updated_at = NOW() WHERE id = %s AND user_id = %s",
                         (title, conv_id, user_id),
                     )
+
+            logger.info(
+                "chat_observability user_id=%s conv_id=%s context_tokens_est=%s tool_tokens_saved_est=%s summary_used=%s memory_retrieved=%s memory_extracted=%s memory_dedup_dropped=%s tool_cache_hits=%s",
+                user_id,
+                conv_id,
+                context_tokens_est,
+                tool_tokens_saved_est,
+                summary_used,
+                memory_retrieved_count,
+                memory_extracted_count,
+                memory_dedup_dropped_count,
+                tool_cache_hits,
+            )
 
             yield json.dumps({"type": "done", "conversation_id": conv_id}) + "\n"
             return
@@ -1853,26 +3006,68 @@ async def get_conversations(user_id: str) -> list[dict]:
     ]
 
 
-async def get_conversation_messages(user_id: str, conversation_id: str) -> list[dict]:
-    """Get messages for a conversation (ownership enforced via RLS)."""
+async def get_conversation_messages(
+    user_id: str,
+    conversation_id: str,
+    *,
+    limit: int | None = None,
+    before: datetime | None = None,
+) -> list[dict]:
+    """Get conversation messages (ownership enforced via RLS).
+
+    Supports optional pagination by loading newest messages first when `limit` is set.
+    """
+    max_limit = 500
+    page_limit = max(1, min(int(limit), max_limit)) if limit is not None else None
+
     async with get_db_for_user(user_id) as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                SELECT role, content, tool_calls, artifacts, model, tokens_in, tokens_out, latency_ms, created_at
-                FROM chat_messages
-                WHERE conversation_id = %s AND user_id = %s
-                ORDER BY created_at
-                """,
-                (conversation_id, user_id),
-            )
-            rows = await cur.fetchall()
+            if page_limit is None and before is None:
+                await cur.execute(
+                    """
+                    SELECT role, content, tool_calls, artifacts, model, tokens_in, tokens_out, latency_ms, created_at
+                    FROM chat_messages
+                    WHERE conversation_id = %s AND user_id = %s
+                    ORDER BY created_at
+                    """,
+                    (conversation_id, user_id),
+                )
+                rows = await cur.fetchall()
+            else:
+                effective_limit = page_limit or 200
+                if before is None:
+                    await cur.execute(
+                        """
+                        SELECT role, content, tool_calls, artifacts, model, tokens_in, tokens_out, latency_ms, created_at
+                        FROM chat_messages
+                        WHERE conversation_id = %s AND user_id = %s
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                        """,
+                        (conversation_id, user_id, effective_limit),
+                    )
+                else:
+                    await cur.execute(
+                        """
+                        SELECT role, content, tool_calls, artifacts, model, tokens_in, tokens_out, latency_ms, created_at
+                        FROM chat_messages
+                        WHERE conversation_id = %s AND user_id = %s AND created_at < %s
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                        """,
+                        (conversation_id, user_id, before, effective_limit),
+                    )
+                rows = list(reversed(await cur.fetchall()))
     return [
         {
             "role": r["role"],
             "content": r["content"],
             "tool_calls": r["tool_calls"],
             "artifacts": r["artifacts"],
+            "model": r["model"],
+            "tokens_in": r["tokens_in"],
+            "tokens_out": r["tokens_out"],
+            "latency_ms": r["latency_ms"],
             "created_at": r["created_at"].isoformat(),
         }
         for r in rows

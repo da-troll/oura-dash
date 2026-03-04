@@ -3,8 +3,8 @@
 import asyncio
 import json
 import logging
-from contextlib import asynccontextmanager
-from datetime import date
+from contextlib import asynccontextmanager, suppress
+from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -23,7 +23,8 @@ from app.auth import (
     delete_session,
     validate_password,
 )
-from app.db import get_db_for_user, get_db_system
+from app.chat import initialize_system_prompt
+from app.db import close_db_pool, get_db_for_user, get_db_system
 from app.dependencies import get_current_user
 from app.oura import auth as oura_auth
 from app.pipelines import features, ingest
@@ -133,6 +134,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         raise RuntimeError(f"TOKEN_ENCRYPTION_KEY is not a valid Fernet key: {e}") from e
 
+    initialize_system_prompt()
     await run_migrations()
 
     # Runtime DB-role guard
@@ -151,8 +153,13 @@ async def lifespan(app: FastAPI):
 
     # Start periodic cleanup task
     cleanup_task = asyncio.create_task(periodic_cleanup())
-    yield
-    cleanup_task.cancel()
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
+        await close_db_pool()
 
 
 login_rate_limiter = LoginRateLimiter(
@@ -475,6 +482,8 @@ async def admin_ingest(
 
     try:
         result = await ingest.run_full_ingest(start, end, user["user_id"])
+        from app.chat import invalidate_user_chat_cache
+        await invalidate_user_chat_cache(user["user_id"])
 
         if result["days_processed"] == 0:
             if result.get("sync_mode") == "incremental":
@@ -512,8 +521,12 @@ async def admin_ingest_stream(
         raise HTTPException(status_code=400, detail="Provide both start and end, or neither")
 
     async def stream():
-        async for event in ingest.run_full_ingest_stream(start, end, user["user_id"]):
-            yield json.dumps(event) + "\n"
+        from app.chat import invalidate_user_chat_cache
+        try:
+            async for event in ingest.run_full_ingest_stream(start, end, user["user_id"]):
+                yield json.dumps(event) + "\n"
+        finally:
+            await invalidate_user_chat_cache(user["user_id"])
 
     return StreamingResponse(
         stream(),
@@ -1088,6 +1101,8 @@ async def list_conversations(user: dict = Depends(get_current_user)):
 @app.get("/chat/conversations/{conversation_id}")
 async def get_conversation(
     conversation_id: str,
+    limit: int | None = Query(default=None, ge=1, le=500),
+    before: datetime | None = Query(default=None),
     user: dict = Depends(get_current_user),
 ):
     """Get messages for a specific conversation."""
@@ -1095,7 +1110,12 @@ async def get_conversation(
         raise HTTPException(status_code=403, detail="Chat feature is not enabled")
 
     from app.chat import get_conversation_messages
-    return await get_conversation_messages(user["user_id"], conversation_id)
+    return await get_conversation_messages(
+        user["user_id"],
+        conversation_id,
+        limit=limit,
+        before=before,
+    )
 
 
 @app.delete("/chat/conversations/{conversation_id}")

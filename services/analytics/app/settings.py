@@ -48,9 +48,27 @@ class Settings(BaseSettings):
     # OpenAI (chat agent)
     openai_api_key: str = ""
     chat_enabled: bool = False
+    chat_phase1_memory_enabled: bool = True
+    chat_long_term_memory_enabled: bool = True
+    chat_redis_cache_enabled: bool = False
     chat_max_tool_calls_per_turn: int = 10
     chat_timeout_seconds: int = 60
     chat_max_tokens: int = 4096
+    chat_context_budget_tokens: int = 9000
+    chat_recent_turns_min: int = 6
+    chat_tool_result_max_chars: int = 1200
+    chat_summary_trigger_tokens: int = 12000
+    chat_summary_max_tokens: int = 300
+    chat_memory_retrieval_max_tokens: int = 400
+    chat_memory_retrieval_top_k: int = 20
+    chat_memory_retrieval_keep_k: int = 6
+    chat_memory_similarity_threshold: float = 0.72
+
+    # Redis (optional for chat cache/session state)
+    redis_url: str = ""
+    chat_cache_ttl_seconds: int = 900
+    chat_session_state_ttl_seconds: int = 1800
+    chat_embedding_cache_ttl_seconds: int = 300
 
 
 settings = Settings()

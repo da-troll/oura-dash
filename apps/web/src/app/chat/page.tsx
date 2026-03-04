@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
@@ -27,6 +27,11 @@ interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   artifacts?: ChatChartArtifact[];
+  model?: string | null;
+  tokens_in?: number | null;
+  tokens_out?: number | null;
+  latency_ms?: number | null;
+  created_at?: string;
 }
 
 interface Conversation {
@@ -37,6 +42,7 @@ interface Conversation {
 }
 
 const FOLLOW_UP_TEXT = "Would you like a different time period, chart type, or another edit?";
+const CONVERSATION_PAGE_SIZE = 120;
 
 function parseTableRow(line: string): string[] {
   return line
@@ -117,6 +123,18 @@ function splitFollowUp(content: string): { body: string; hasFollowUp: boolean } 
   return { body: trimmed, hasFollowUp: false };
 }
 
+function formatTokenCount(value?: number | null): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "—";
+  return value.toLocaleString();
+}
+
+function normalizeChatMessages(data: ChatMessage[]): ChatMessage[] {
+  return data.map((msg) => ({
+    ...msg,
+    artifacts: Array.isArray(msg.artifacts) ? msg.artifacts : undefined,
+  }));
+}
+
 const markdownComponents: Components = {
   img: ({ alt }) => (
     <span className="text-xs text-muted-foreground">
@@ -130,35 +148,107 @@ function getCsrfToken(): string {
   return match ? decodeURIComponent(match[1]) : "";
 }
 
+const ChatComposer = memo(function ChatComposer({
+  loading,
+  onSend,
+}: {
+  loading: boolean;
+  onSend: (text: string) => Promise<void>;
+}) {
+  const [input, setInput] = useState("");
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text || loading) return;
+    setInput("");
+    await onSend(text);
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex gap-2">
+      <input
+        type="text"
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        placeholder="Ask about your health data..."
+        className="flex-1 border rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary bg-background"
+        disabled={loading}
+      />
+      <Button type="submit" disabled={loading || !input.trim()}>
+        {loading ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Send className="h-4 w-4" />
+        )}
+      </Button>
+    </form>
+  );
+});
+
 export default function ChatPage() {
   const router = useRouter();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [chatEnabled, setChatEnabled] = useState<boolean | null>(null);
   const [toolStatus, setToolStatus] = useState<string | null>(null);
+  const [composerEpoch, setComposerEpoch] = useState(0);
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const suppressAutoScrollRef = useRef(false);
 
   const introTriggered = useRef(false);
 
+  const fetchConversationPage = useCallback(async (id: string, before?: string) => {
+    const params = new URLSearchParams({
+      limit: String(CONVERSATION_PAGE_SIZE),
+    });
+    if (before) {
+      params.set("before", before);
+    }
+    return clientApi<ChatMessage[]>(`/chat/conversations/${id}?${params.toString()}`);
+  }, []);
+
   async function loadConversation(id: string) {
     try {
-      const data = await clientApi<ChatMessage[]>(
-        `/chat/conversations/${id}`
-      );
-      setMessages(
-        data.map((msg) => ({
-          ...msg,
-          artifacts: Array.isArray(msg.artifacts) ? msg.artifacts : undefined,
-        }))
-      );
+      const data = await fetchConversationPage(id);
+      setMessages(normalizeChatMessages(data));
+      setHasOlderMessages(data.length === CONVERSATION_PAGE_SIZE);
       setConversationId(id);
     } catch {
+      setHasOlderMessages(false);
       // Ignore
     }
   }
+
+  const loadOlderMessages = useCallback(async () => {
+    if (!conversationId || loadingOlderMessages || !hasOlderMessages) return;
+    const oldestCreatedAt = messages[0]?.created_at;
+    if (!oldestCreatedAt) {
+      setHasOlderMessages(false);
+      return;
+    }
+
+    setLoadingOlderMessages(true);
+    try {
+      const data = await fetchConversationPage(conversationId, oldestCreatedAt);
+      if (data.length === 0) {
+        setHasOlderMessages(false);
+        return;
+      }
+      suppressAutoScrollRef.current = true;
+      const olderMessages = normalizeChatMessages(data);
+      setMessages((prev) => [...olderMessages, ...prev]);
+      setHasOlderMessages(data.length === CONVERSATION_PAGE_SIZE);
+    } catch {
+      // Ignore
+    } finally {
+      setLoadingOlderMessages(false);
+    }
+  }, [conversationId, fetchConversationPage, hasOlderMessages, loadingOlderMessages, messages]);
 
   async function deleteConversation(id: string) {
     try {
@@ -167,6 +257,7 @@ export default function ChatPage() {
       if (conversationId === id) {
         setConversationId(null);
         setMessages([]);
+        setHasOlderMessages(false);
       }
     } catch {
       // Ignore
@@ -176,16 +267,9 @@ export default function ChatPage() {
   function startNewConversation() {
     setConversationId(null);
     setMessages([]);
-    setInput("");
+    setHasOlderMessages(false);
+    setComposerEpoch((prev) => prev + 1);
     triggerIntro();
-  }
-
-  async function sendMessage() {
-    const text = input.trim();
-    if (!text || loading) return;
-
-    setInput("");
-    await sendRaw(text, { showUserMessage: true, convId: conversationId });
   }
 
   const sendRaw = useCallback(async (
@@ -260,16 +344,12 @@ export default function ChatPage() {
                   if (last?.role === "assistant") {
                     return [
                       ...prev.slice(0, -1),
-                      { ...last, content: assistantContent, artifacts: last.artifacts ?? assistantArtifacts },
+                      { ...last, content: assistantContent },
                     ];
                   }
                   return [
                     ...prev,
-                    {
-                      role: "assistant",
-                      content: assistantContent,
-                      artifacts: assistantArtifacts.length ? assistantArtifacts : undefined,
-                    },
+                    { role: "assistant", content: assistantContent },
                   ];
                 });
                 break;
@@ -278,27 +358,24 @@ export default function ChatPage() {
                 if (chunk.chart) {
                   const chart = chunk.chart as ChatChartArtifact;
                   assistantArtifacts = [...assistantArtifacts, chart];
-                  setMessages((prev) => {
-                    const last = prev[prev.length - 1];
-                    if (last?.role === "assistant") {
-                      return [
-                        ...prev.slice(0, -1),
-                        {
-                          ...last,
-                          artifacts: [...(last.artifacts ?? []), chart],
-                        },
-                      ];
-                    }
-                    return [
-                      ...prev,
-                      {
-                        role: "assistant",
-                        content: "",
-                        artifacts: [chart],
-                      },
-                    ];
-                  });
                 }
+                break;
+
+              case "usage":
+                setMessages((prev) => {
+                  const last = prev[prev.length - 1];
+                  if (last?.role !== "assistant") return prev;
+                  return [
+                    ...prev.slice(0, -1),
+                    {
+                      ...last,
+                      tokens_in:
+                        typeof chunk.tokens_in === "number" ? chunk.tokens_in : last.tokens_in,
+                      tokens_out:
+                        typeof chunk.tokens_out === "number" ? chunk.tokens_out : last.tokens_out,
+                    },
+                  ];
+                });
                 break;
 
               case "error":
@@ -312,6 +389,28 @@ export default function ChatPage() {
                 break;
 
               case "done":
+                if (assistantArtifacts.length) {
+                  setMessages((prev) => {
+                    const last = prev[prev.length - 1];
+                    if (last?.role === "assistant") {
+                      return [
+                        ...prev.slice(0, -1),
+                        {
+                          ...last,
+                          artifacts: [...(last.artifacts ?? []), ...assistantArtifacts],
+                        },
+                      ];
+                    }
+                    return [
+                      ...prev,
+                      {
+                        role: "assistant",
+                        content: assistantContent,
+                        artifacts: assistantArtifacts,
+                      },
+                    ];
+                  });
+                }
                 break;
             }
           } catch {
@@ -345,6 +444,34 @@ export default function ChatPage() {
     await sendRaw("__OURALIE_INTRO__", { showUserMessage: false, convId: null });
   }, [sendRaw]);
 
+  const renderedMessages = useMemo(
+    () =>
+      messages.map((msg) => {
+        const { body, hasFollowUp } =
+          msg.role === "assistant"
+            ? splitFollowUp(msg.content)
+            : { body: msg.content, hasFollowUp: false };
+
+        return {
+          ...msg,
+          body,
+          hasFollowUp,
+          renderedMarkdown: msg.role === "assistant" ? toRenderableMarkdown(body) : undefined,
+          hasTokenUsage:
+            msg.role === "assistant" &&
+            (typeof msg.tokens_in === "number" || typeof msg.tokens_out === "number"),
+        };
+      }),
+    [messages],
+  );
+
+  const sendUserMessage = useCallback(
+    async (text: string) => {
+      await sendRaw(text, { showUserMessage: true, convId: conversationId });
+    },
+    [conversationId, sendRaw],
+  );
+
   // Check if chat is enabled
   useEffect(() => {
     async function checkStatus() {
@@ -369,6 +496,10 @@ export default function ChatPage() {
 
   // Auto-scroll to bottom
   useEffect(() => {
+    if (suppressAutoScrollRef.current) {
+      suppressAutoScrollRef.current = false;
+      return;
+    }
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, toolStatus]);
 
@@ -505,23 +636,38 @@ export default function ChatPage() {
             </div>
           )}
 
-          {messages.map((msg, i) => {
-            const { body, hasFollowUp } =
-              msg.role === "assistant"
-                ? splitFollowUp(msg.content)
-                : { body: msg.content, hasFollowUp: false };
+          {conversationId && hasOlderMessages && (
+            <div className="flex justify-center">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={loadOlderMessages}
+                disabled={loadingOlderMessages}
+              >
+                {loadingOlderMessages ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Loading older messages...
+                  </>
+                ) : (
+                  "Load older messages"
+                )}
+              </Button>
+            </div>
+          )}
 
+          {renderedMessages.map((msg, i) => {
             return (
             <div
               key={i}
-              className={`flex ${
-                msg.role === "user" ? "justify-end" : "justify-start"
+              className={`flex flex-col ${
+                msg.role === "user" ? "items-end" : "items-start"
               }`}
             >
               <div
                 className={`max-w-[75%] rounded-lg px-4 py-2 ${
                   msg.role === "user"
-                    ? "bg-primary text-primary-foreground"
+                    ? "bg-primary text-primary-foreground dark:bg-zinc-600 dark:text-zinc-50 dark:border dark:border-zinc-500/50"
                     : "bg-muted"
                 }`}
               >
@@ -531,12 +677,12 @@ export default function ChatPage() {
                     {msg.artifacts?.map((chart, idx) => (
                       <ChatChart key={`${i}-chart-${idx}`} chart={chart} />
                     ))}
-                    {body ? (
+                    {msg.body ? (
                       <ReactMarkdown components={markdownComponents}>
-                        {toRenderableMarkdown(body)}
+                        {msg.renderedMarkdown || ""}
                       </ReactMarkdown>
                     ) : null}
-                    {hasFollowUp ? (
+                    {msg.hasFollowUp ? (
                       <p className="mt-6 italic text-muted-foreground">{FOLLOW_UP_TEXT}</p>
                     ) : null}
                   </div>
@@ -544,6 +690,12 @@ export default function ChatPage() {
                   <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
                 )}
               </div>
+              {msg.hasTokenUsage ? (
+                <p className="mt-1 px-1 text-[11px] text-muted-foreground">
+                  Tokens: {formatTokenCount(msg.tokens_in)} in · {formatTokenCount(msg.tokens_out)} out ·{" "}
+                  {formatTokenCount((msg.tokens_in ?? 0) + (msg.tokens_out ?? 0))} total
+                </p>
+              ) : null}
             </div>
             );
           })}
@@ -562,29 +714,7 @@ export default function ChatPage() {
 
         {/* Input */}
         <div className="border-t p-4">
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              sendMessage();
-            }}
-            className="flex gap-2"
-          >
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask about your health data..."
-              className="flex-1 border rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary bg-background"
-              disabled={loading}
-            />
-            <Button type="submit" disabled={loading || !input.trim()}>
-              {loading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Send className="h-4 w-4" />
-              )}
-            </Button>
-          </form>
+          <ChatComposer key={composerEpoch} loading={loading} onSend={sendUserMessage} />
         </div>
       </div>
     </div>

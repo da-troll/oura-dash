@@ -6,10 +6,16 @@ from app.chat import (
     DEFAULT_LOOKBACK_DAYS,
     FOLLOW_UP_QUESTION,
     _build_chart_payload,
+    _build_context_from_history,
+    _compact_tool_result_for_context,
     _canonicalize_metric,
     _ensure_follow_up_question,
+    _estimate_messages_tokens,
+    _estimate_tokens_text,
+    _parse_summary_state,
     _resolve_date_window,
     _sanitize_markdown_images,
+    _serialize_summary_state,
 )
 
 
@@ -92,3 +98,66 @@ def test_scatter_xy_chart_payload_shape():
     assert payload["chartType"] == "scatter_xy"
     assert payload["xKey"] == "x"
     assert payload["yKey"] == "y"
+
+
+def test_context_budget_keeps_recent_messages():
+    base_messages = [{"role": "system", "content": "You are helpful."}]
+    history_messages = [
+        {"role": "user", "content": f"old-{idx}"}
+        for idx in range(10)
+    ]
+    context, _tokens, omitted = _build_context_from_history(
+        base_messages=base_messages,
+        history_messages=history_messages,
+        budget_tokens=30,  # intentionally small budget
+        min_recent_messages=3,
+    )
+    assert len(context) >= 4
+    assert context[-3]["content"] == "old-7"
+    assert context[-1]["content"] == "old-9"
+    assert omitted >= 1
+
+
+def test_tool_result_compaction_reduces_token_estimate():
+    raw = """
+    {
+      "metric": "sleep_score",
+      "period": "2026-01-01 to 2026-01-15",
+      "data": [
+        {"date": "2026-01-01", "value": 71},
+        {"date": "2026-01-02", "value": 73},
+        {"date": "2026-01-03", "value": 69},
+        {"date": "2026-01-04", "value": 74},
+        {"date": "2026-01-05", "value": 77}
+      ]
+    }
+    """
+    compacted, saved = _compact_tool_result_for_context("get_metric_series", raw, 220)
+    assert len(compacted) <= 220
+    assert saved > 0
+    assert _estimate_tokens_text(compacted) < _estimate_tokens_text(raw)
+
+
+def test_summary_state_round_trip():
+    payload = _serialize_summary_state("Bullet 1\nBullet 2", None)
+    summary, up_to = _parse_summary_state(payload)
+    assert summary == "Bullet 1\nBullet 2"
+    assert up_to is None
+
+
+def test_summary_state_supports_plain_text_legacy():
+    summary, up_to = _parse_summary_state("legacy summary")
+    assert summary == "legacy summary"
+    assert up_to is None
+
+
+def test_message_token_estimator_counts_tool_calls():
+    messages = [
+        {"role": "system", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": "tool request",
+            "tool_calls": [{"id": "1", "function": {"name": "x", "arguments": "{}"}}],
+        },
+    ]
+    assert _estimate_messages_tokens(messages) > 0

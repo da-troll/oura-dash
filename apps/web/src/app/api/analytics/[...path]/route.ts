@@ -3,6 +3,15 @@ import { NextRequest, NextResponse } from "next/server";
 
 const ANALYTICS_URL =
   process.env.ANALYTICS_BASE_URL || "http://localhost:8001";
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+function getTimeoutMs(): number {
+  const raw = Number(process.env.ANALYTICS_PROXY_TIMEOUT_MS);
+  if (Number.isFinite(raw) && raw > 0) {
+    return raw;
+  }
+  return DEFAULT_TIMEOUT_MS;
+}
 
 function getSessionToken(cookieStore: Awaited<ReturnType<typeof cookies>>): string | undefined {
   const isProd = process.env.NODE_ENV === "production";
@@ -66,7 +75,29 @@ async function handler(
     }
   }
 
-  const response = await fetch(url.toString(), fetchOptions);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getTimeoutMs());
+
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), {
+      ...fetchOptions,
+      signal: controller.signal,
+      cache: "no-store",
+    });
+  } catch (error) {
+    console.error("Analytics proxy fetch failed", {
+      method: request.method,
+      target: url.toString(),
+      error,
+    });
+    return NextResponse.json(
+      { error: "Analytics service unavailable" },
+      { status: 504 }
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
 
   // Handle NDJSON streaming (for chat endpoint)
   const respContentType = response.headers.get("content-type") || "";
