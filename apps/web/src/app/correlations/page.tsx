@@ -624,9 +624,10 @@ export default function CorrelationsPage() {
                           fill="none"
                           line={{ stroke: "#14b8a6", strokeWidth: 2 }}
                           lineType="joint"
-                          shape={(props: Record<string, unknown>) => (
-                            <circle cx={props.cx as number} cy={props.cy as number} r={0} />
-                          )}
+                          shape={(props: unknown) => {
+                            const point = props as { cx?: number; cy?: number };
+                            return <circle cx={point.cx ?? 0} cy={point.cy ?? 0} r={0} />;
+                          }}
                         />
                       );
                     })()}
