@@ -20,14 +20,15 @@ export async function POST(request: NextRequest) {
   const body = await request.json();
 
   // Resolve client IP for backend logging/audit.
-  // Use request.ip when available; otherwise use the last X-Forwarded-For hop.
+  // Prefer proxy headers and fall back to unknown.
   const forwardedFor = request.headers.get("x-forwarded-for");
   const forwardedIp = forwardedFor
     ?.split(",")
     .map((ip) => ip.trim())
     .filter(Boolean)
-    .at(-1);
-  const clientIp = request.ip || forwardedIp || "unknown";
+    .at(0);
+  const realIp = request.headers.get("x-real-ip")?.trim();
+  const clientIp = forwardedIp || realIp || "unknown";
 
   const response = await fetch(`${ANALYTICS_URL}/auth/register`, {
     method: "POST",
