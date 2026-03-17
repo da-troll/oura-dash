@@ -450,6 +450,7 @@ async def get_auth_status(
         connected=status["connected"],
         expires_at=status.get("expires_at"),
         scopes=status.get("scopes"),
+        oura_email=status.get("oura_email"),
     )
 
 

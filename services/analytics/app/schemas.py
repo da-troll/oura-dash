@@ -64,6 +64,7 @@ class AuthStatusResponse(BaseModel):
     connected: bool
     expires_at: datetime | None = None
     scopes: list[str] | None = None
+    oura_email: str | None = None
 
 
 class AuthUrlResponse(BaseModel):

@@ -28,10 +28,26 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { ArrowLeft, CircleHelp } from "lucide-react";
 
+const SCOPE_LABELS: Record<string, string> = {
+  "extapi:daily": "Daily Summaries",
+  "extapi:heartrate": "Heart Rate",
+  "extapi:tag": "Tags",
+  "extapi:session": "Sessions",
+  "extapi:workout": "Workouts",
+  "extapi:personal": "Personal Info",
+  "extapi:spo2": "Blood Oxygen",
+  "extapi:heart_health": "Heart Health",
+};
+
+function formatScope(scope: string): string {
+  return SCOPE_LABELS[scope] || scope.replace("extapi:", "").replace(/_/g, " ");
+}
+
 interface AuthStatus {
   connected: boolean;
   expires_at?: string;
   scopes?: string[];
+  oura_email?: string;
 }
 
 interface SyncResult {
@@ -161,7 +177,7 @@ function formatSyncMessage(message?: string): string {
 function SettingsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { user, logout } = useAuth();
+  const { user, loading: authLoading, logout } = useAuth();
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -345,7 +361,7 @@ function SettingsContent() {
     }
   };
 
-  if (loading) {
+  if (loading || authLoading) {
     return (
       <div className="container mx-auto py-8">
         <div className="animate-pulse">Loading...</div>
@@ -355,7 +371,7 @@ function SettingsContent() {
 
   return (
     <div className="container mx-auto py-8 max-w-2xl">
-      <div className="pointer-events-none fixed inset-x-0 bottom-4 z-50 mx-auto flex w-[min(92vw,48rem)] flex-col gap-2">
+      <div className="pointer-events-none fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 flex-col items-center gap-2">
         {toasts.map((toast) => (
           <div
             key={toast.id}
@@ -474,11 +490,11 @@ function SettingsContent() {
               )}
               {authStatus.scopes && authStatus.scopes.length > 0 && (
                 <div>
-                  <p className="text-sm text-muted-foreground mb-1">Scopes:</p>
+                  <p className="text-sm text-muted-foreground mb-1">Permissions:</p>
                   <div className="flex flex-wrap gap-1">
                     {authStatus.scopes.map((scope) => (
                       <Badge key={scope} variant="outline" className="text-xs">
-                        {scope}
+                        {formatScope(scope)}
                       </Badge>
                     ))}
                   </div>
@@ -495,7 +511,7 @@ function SettingsContent() {
           <div>
             <CardTitle>Account</CardTitle>
             <CardDescription className="mt-1.5">
-              {user?.email || "Unknown"}
+              {authLoading ? "Loading..." : (authStatus?.oura_email || user?.email || "Unknown")}
             </CardDescription>
           </div>
           <Button variant="outline" size="sm" onClick={logout}>

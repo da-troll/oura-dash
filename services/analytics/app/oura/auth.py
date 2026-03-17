@@ -221,10 +221,23 @@ async def get_auth_status(user_id: str) -> dict:
 
     scopes = auth.get("scope", "").split() if auth.get("scope") else []
 
+    # Fetch Oura account email from personal info
+    oura_email = None
+    async with get_db_for_user(user_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT email FROM oura_personal_info WHERE user_id = %s",
+                (user_id,),
+            )
+            row = await cur.fetchone()
+            if row:
+                oura_email = row["email"]
+
     return {
         "connected": True,
         "expires_at": expires_at.isoformat(),
         "scopes": scopes,
+        "oura_email": oura_email,
     }
 
 
