@@ -289,8 +289,8 @@ async def get_dashboard(
     user: dict = Depends(get_current_user),
 ) -> DashboardResponse:
     """Get dashboard summary data."""
-    if days not in (7, 10, 30, 60, 100):
-        raise HTTPException(status_code=400, detail="days must be 7, 10, 30, 60, or 100")
+    if days != 0 and days not in (7, 10, 30, 60, 120):
+        raise HTTPException(status_code=400, detail="days must be 7, 10, 30, 60, 120, or 0 (all)")
 
     user_id = user["user_id"]
 
@@ -312,7 +312,8 @@ async def get_dashboard(
     async with get_db_for_user(user_id) as conn:
         async with conn.cursor() as cur:
             # Get averages for the selected period
-            await cur.execute("""
+            date_filter = "AND date >= CURRENT_DATE - %(days)s" if days > 0 else ""
+            await cur.execute(f"""
                 SELECT
                     AVG(readiness_score) as readiness_avg,
                     AVG(sleep_score) as sleep_score_avg,
@@ -328,8 +329,8 @@ async def get_dashboard(
                     AVG(workout_total_minutes) as workout_minutes_avg,
                     COUNT(*) as days_with_data
                 FROM oura_daily
-                WHERE date >= CURRENT_DATE - %(days)s
-                AND user_id = %(user_id)s
+                WHERE user_id = %(user_id)s
+                {date_filter}
                 AND (readiness_score IS NOT NULL
                      OR sleep_score IS NOT NULL
                      OR activity_score IS NOT NULL
@@ -338,7 +339,7 @@ async def get_dashboard(
             summary_row = await cur.fetchone()
 
             # Get trend data for the selected period
-            await cur.execute("""
+            await cur.execute(f"""
                 SELECT
                     date,
                     readiness_score,
@@ -353,8 +354,8 @@ async def get_dashboard(
                     spo2_average,
                     workout_total_minutes
                 FROM oura_daily
-                WHERE date >= CURRENT_DATE - %(days)s
-                AND user_id = %(user_id)s
+                WHERE user_id = %(user_id)s
+                {date_filter}
                 ORDER BY date
             """, {"days": days, "user_id": user_id})
             trend_rows = await cur.fetchall()

@@ -230,7 +230,8 @@ export default function DashboardPage() {
               <SelectItem value="10">10 days</SelectItem>
               <SelectItem value="30">30 days</SelectItem>
               <SelectItem value="60">60 days</SelectItem>
-              <SelectItem value="100">100 days</SelectItem>
+              <SelectItem value="120">120 days</SelectItem>
+              <SelectItem value="0">Max</SelectItem>
             </SelectContent>
           </Select>
           <Select value="dashboard" onValueChange={(value) => router.push(`/${value}`)}>
