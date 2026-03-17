@@ -355,7 +355,7 @@ function SettingsContent() {
 
   return (
     <div className="container mx-auto py-8 max-w-2xl">
-      <div className="pointer-events-none fixed inset-x-0 top-4 z-50 mx-auto flex w-[min(92vw,48rem)] flex-col gap-2">
+      <div className="pointer-events-none fixed inset-x-0 bottom-4 z-50 mx-auto flex w-[min(92vw,48rem)] flex-col gap-2">
         {toasts.map((toast) => (
           <div
             key={toast.id}
@@ -366,7 +366,7 @@ function SettingsContent() {
               toast.kind === "success"
                 ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-100"
                 : "border-red-500/40 bg-red-500/15 text-red-100",
-              toast.visible ? "translate-y-0 opacity-100" : "-translate-y-4 opacity-0",
+              toast.visible ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0",
             )}
           >
             {toast.message}
@@ -376,7 +376,7 @@ function SettingsContent() {
 
       <div className="flex justify-between items-center mb-8">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => router.back()}>
+          <Button variant="ghost" size="icon" onClick={() => router.push("/dashboard")}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <h1 className="text-3xl font-bold">Settings</h1>
