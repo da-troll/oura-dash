@@ -366,7 +366,7 @@ export const ChatChart = memo(function ChatChart({ chart }: { chart: ChatChartAr
       ))}
     </ScatterChart>
   ) : chart.chartType === "radar" ? (
-    <RadarChart data={chart.data} cx="50%" cy="50%" outerRadius="65%">
+    <RadarChart data={chart.data} cx="50%" cy="48%" outerRadius="65%">
       <PolarGrid gridType="circle" stroke="#444" />
       <PolarAngleAxis
         dataKey={chart.xKey}
@@ -466,7 +466,7 @@ export const ChatChart = memo(function ChatChart({ chart }: { chart: ChatChartAr
           </p>
         )}
       </div>
-      <div className="h-64 w-full">
+      <div className={`w-full ${chart.chartType === "radar" ? "h-80" : "h-64"}`}>
         <ResponsiveContainer width="100%" height="100%">
           {chartNode}
         </ResponsiveContainer>
