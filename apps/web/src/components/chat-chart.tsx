@@ -366,7 +366,7 @@ export const ChatChart = memo(function ChatChart({ chart }: { chart: ChatChartAr
       ))}
     </ScatterChart>
   ) : chart.chartType === "radar" ? (
-    <RadarChart data={chart.data} cx="50%" cy="50%" outerRadius="75%">
+    <RadarChart data={chart.data} cx="50%" cy="50%" outerRadius="65%">
       <PolarGrid gridType="circle" stroke="#444" />
       <PolarAngleAxis
         dataKey={chart.xKey}
@@ -378,6 +378,7 @@ export const ChatChart = memo(function ChatChart({ chart }: { chart: ChatChartAr
         domain={[0, 100]}
         tick={{ fill: "#666", fontSize: 11 }}
         tickFormatter={formatNumericTick}
+        stroke="#444"
       />
       <Tooltip content={<RadarTooltip />} cursor={false} />
       {chart.series.map((series) => (
