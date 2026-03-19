@@ -161,6 +161,52 @@ function ChatChartTooltip({
   );
 }
 
+function RadarTooltip({
+  active,
+  payload,
+  label,
+}: TooltipProps<number, string>) {
+  if (!active || !payload?.length) return null;
+
+  const renderedLabel =
+    typeof label === "string" ? humanizeLabel(label) : label;
+
+  return (
+    <div className="rounded-lg border bg-background p-3 shadow-lg">
+      <div className="text-xs font-medium mb-1">{renderedLabel}</div>
+      <div className="space-y-1">
+        {payload.map((entry) => {
+          const payloadRecord =
+            entry.payload && typeof entry.payload === "object"
+              ? (entry.payload as Record<string, unknown>)
+              : null;
+          const raw = payloadRecord?.raw;
+          const unit = typeof payloadRecord?.unit === "string" ? payloadRecord.unit : "";
+          const score = typeof entry.value === "number"
+            ? Number(entry.value.toFixed(1))
+            : entry.value;
+          return (
+            <div key={String(entry.dataKey)} className="text-xs">
+              <div className="flex items-center gap-2">
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ backgroundColor: entry.color || "#6366f1" }}
+                />
+                <span className="font-semibold">{String(score)}/100</span>
+              </div>
+              {raw != null && (
+                <div className="text-muted-foreground ml-4">
+                  {String(raw)} ({unit})
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export const ChatChart = memo(function ChatChart({ chart }: { chart: ChatChartArtifact }) {
   if (!chart.data?.length || !chart.series?.length) return null;
 
@@ -327,7 +373,7 @@ export const ChatChart = memo(function ChatChart({ chart }: { chart: ChatChartAr
         tick={{ fill: "#666", fontSize: 11 }}
         tickFormatter={formatNumericTick}
       />
-      <Tooltip content={<ChatChartTooltip unit={chart.unit} />} cursor={false} />
+      <Tooltip content={<RadarTooltip />} cursor={false} />
       {chart.series.map((series) => (
         <Radar
           key={series.key}

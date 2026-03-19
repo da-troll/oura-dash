@@ -653,40 +653,41 @@ def _build_chart_payload(tool_name: str, args: dict, raw_result: str) -> dict[st
         return None
 
     if tool_name == "get_summary":
-        # Score-based metrics (already 0-100 scale)
+        # Score-based metrics (already 0-100 scale, target = 85 "good")
         score_keys = [
-            ("readiness_avg", "Readiness"),
-            ("sleep_avg", "Sleep"),
-            ("activity_avg", "Activity"),
+            ("readiness_avg", "Readiness", "out of 100"),
+            ("sleep_avg", "Sleep", "out of 100"),
+            ("activity_avg", "Activity", "out of 100"),
         ]
         # Metrics with different scales — normalize to 0-100 for radar
-        # (lo, hi, invert): invert=True means lower raw value = higher score
+        # (key, label, target_value, unit, invert)
+        # 100 on the radar = hitting the target "good" value
         scaled_keys = [
-            ("steps_avg", "Steps", 0, 10000, False),
-            ("hrv_avg", "HRV", 15, 70, False),
-            ("recovery_avg", "Recovery", 0, 120, False),
+            ("steps_avg", "Steps", 10000, "target: 10,000/day", False),
+            ("hrv_avg", "HRV", 50, "target: 50ms", False),
+            ("sleep_hours_avg", "Sleep Hours", 8, "target: 8h", False),
         ]
 
         bar_data = []
         radar_data = []
-        for key, label in score_keys:
+        for key, label, unit in score_keys:
             value = parsed.get(key)
             if value is None:
                 continue
             v = round(float(value), 1)
             bar_data.append({"metric": label, "value": v})
-            radar_data.append({"metric": label, "value": v})
+            radar_data.append({"metric": label, "value": v, "raw": v, "unit": unit})
 
-        for key, label, lo, hi, invert in scaled_keys:
+        for key, label, target, unit, invert in scaled_keys:
             value = parsed.get(key)
             if value is None:
                 continue
             v = round(float(value), 1)
             bar_data.append({"metric": label, "value": v})
-            normalized = round(min(max((float(value) - lo) / (hi - lo) * 100, 0), 100), 1)
+            normalized = round(min((float(value) / target) * 100, 120), 1)
             if invert:
                 normalized = round(100 - normalized, 1)
-            radar_data.append({"metric": label, "value": normalized})
+            radar_data.append({"metric": label, "value": normalized, "raw": v, "unit": unit})
 
         if not bar_data:
             return None
