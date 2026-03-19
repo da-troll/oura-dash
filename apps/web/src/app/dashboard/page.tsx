@@ -238,7 +238,7 @@ export default function DashboardPage() {
             <SelectTrigger className="w-[135px]">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent position="popper" side="bottom">
               <SelectItem value="dashboard">Dashboard</SelectItem>
               <SelectItem value="correlations">Correlations</SelectItem>
               <SelectItem value="patterns">Patterns</SelectItem>

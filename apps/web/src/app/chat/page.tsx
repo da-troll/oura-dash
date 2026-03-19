@@ -524,7 +524,7 @@ export default function ChatPage() {
               <SelectTrigger className="w-[160px]">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent position="popper" side="bottom">
                 <SelectItem value="dashboard">Dashboard</SelectItem>
                 <SelectItem value="correlations">Correlations</SelectItem>
                 <SelectItem value="patterns">Patterns</SelectItem>
@@ -605,7 +605,7 @@ export default function ChatPage() {
               <SelectTrigger className="w-[160px]">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent position="popper" side="bottom">
                 <SelectItem value="dashboard">Dashboard</SelectItem>
                 <SelectItem value="correlations">Correlations</SelectItem>
                 <SelectItem value="patterns">Patterns</SelectItem>
