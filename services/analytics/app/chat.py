@@ -662,8 +662,8 @@ def _build_chart_payload(tool_name: str, args: dict, raw_result: str) -> dict[st
         # Metrics with different scales — normalize to 0-100 for radar
         # (lo, hi, invert): invert=True means lower raw value = higher score
         scaled_keys = [
-            ("steps_avg", "Steps", 0, 15000, False),
-            ("hrv_avg", "HRV", 0, 100, False),
+            ("steps_avg", "Steps", 0, 10000, False),
+            ("hrv_avg", "HRV", 15, 70, False),
             ("recovery_avg", "Recovery", 0, 120, False),
         ]
 
